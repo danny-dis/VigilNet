@@ -1,0 +1,33 @@
+[package]
+name = "vigilnet-discovery"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Peer discovery for VigilNet - DHT, mDNS, gossip"
+
+[dependencies]
+libp2p = { workspace = true, features = ["macros", "tokio", "gossipsub", "mdns", "noise", "tcp", "yamux", "identify", "kad", "request-response", "ed25519", "secp256k1", "rsa"] }
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+sha2 = "0.10"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vigilnet-routing = { workspace = true }
+vigilnet-crypto = { workspace = true }
+async-trait = "0.1"
+lru = "0.12"
+parking_lot = "0.12"
+rand = "0.8"
+hex = "0.4"
+base64 = "0.21"
+futures = "0.3"
+prost = "0.12"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[features]
+default = []
+testing = []

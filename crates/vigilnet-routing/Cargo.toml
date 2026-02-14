@@ -1,0 +1,19 @@
+[package]
+name = "vigilnet-routing"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Circuit building and path selection for VigilNet"
+
+[dependencies]
+vigilnet-crypto = { workspace = true }
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+x25519-dalek.workspace = true
+rand.workspace = true
+libp2p.workspace = true
+futures.workspace = true
+async-trait.workspace = true

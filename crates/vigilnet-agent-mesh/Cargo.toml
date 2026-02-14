@@ -1,0 +1,40 @@
+[package]
+name = "vigilnet-agent-mesh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Offline mesh fallback for VigilNet agents - resilient network communication"
+
+[dependencies]
+vigilnet-agent-core = { workspace = true }
+vigilnet-agent-transport = { workspace = true }
+vigilnet-crypto = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+bincode.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+uuid = { version = "1.8", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+futures = "0.3"
+parking_lot = "0.12"
+dashmap = "6.0"
+directories = "5.0"
+rand = "0.8"
+
+rumqttc = "0.24"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = "0.16"
+
+[features]
+default = []
+ble = ["bluer"]
+meshtastic = ["rumqttc"]

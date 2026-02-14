@@ -1,0 +1,104 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vigilnet-agent-core",
+    "crates/vigilnet-core",
+    "crates/vigilnet-crypto",
+    "crates/vigilnet-routing",
+    "crates/vigilnet-discovery",
+    "crates/vigilnet-transport",
+    "crates/vigilnet-tun",
+    "crates/vigilnet-cli",
+    "crates/vigilnet-proxy",
+    "crates/vigilnet-android",
+    "crates/vigilnet-tor",
+    "crates/vigilnet-i2p",
+    "crates/vigilnet-freenet",
+    "crates/vigilnet-wireguard",
+    "crates/vigilnet-nym",
+    "crates/vigilnet-agent-transport",
+    "crates/vigilnet-agent-circles",
+    "crates/vigilnet-agent-research",
+    "crates/vigilnet-agent-mesh",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["VigilNet Contributors"]
+license = "GPL-3.0"
+repository = "https://github.com/danny-dis/VigilNet"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# P2P networking
+libp2p = { version = "0.53", features = [
+    "tokio",
+    "tcp",
+    "quic",
+    "noise",
+    "yamux",
+    "kad",
+    "mdns",
+    "gossipsub",
+    "identify",
+    "macros",
+] }
+
+# Cryptography (RustCrypto - audited, pure Rust)
+aes-gcm = "0.10"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+sha2 = "0.10"
+rand = "0.8"
+hkdf = "0.12"
+hex = "0.4"
+uuid = { version = "1.6", features = ["v4"] }
+base64 = "0.21"
+futures = "0.3"
+
+# TUN interface
+tun-rs = { version = "1.3", features = ["async"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Configuration
+toml = "0.8"
+directories = "5.0"
+
+# Internal crates
+vigilnet-core = { path = "crates/vigilnet-core" }
+vigilnet-crypto = { path = "crates/vigilnet-crypto" }
+vigilnet-routing = { path = "crates/vigilnet-routing" }
+vigilnet-discovery = { path = "crates/vigilnet-discovery" }
+vigilnet-transport = { path = "crates/vigilnet-transport" }
+vigilnet-tun = { path = "crates/vigilnet-tun" }
+vigilnet-android = { path = "crates/vigilnet-android" }
+vigilnet-tor = { path = "crates/vigilnet-tor" }
+vigilnet-i2p = { path = "crates/vigilnet-i2p" }
+vigilnet-freenet = { path = "crates/vigilnet-freenet" }
+vigilnet-wireguard = { path = "crates/vigilnet-wireguard" }
+vigilnet-nym = { path = "crates/vigilnet-nym" }
+vigilnet-agent-core = { path = "crates/vigilnet-agent-core" }
+vigilnet-agent-transport = { path = "crates/vigilnet-agent-transport" }
+vigilnet-agent-circles = { path = "crates/vigilnet-agent-circles" }
+vigilnet-agent-research = { path = "crates/vigilnet-agent-research" }
+vigilnet-agent-mesh = { path = "crates/vigilnet-agent-mesh" }
+async-trait = "0.1"

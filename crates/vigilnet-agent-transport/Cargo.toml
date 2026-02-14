@@ -1,0 +1,21 @@
+[package]
+name = "vigilnet-agent-transport"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vigilnet-crypto = { workspace = true }
+vigilnet-agent-core = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+libp2p = { workspace = true }
+quinn = { version = "0.11", features = ["runtime-tokio", "rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+thiserror.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+socket2 = "0.5"
+bytes = "1"

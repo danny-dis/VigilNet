@@ -1,0 +1,30 @@
+[package]
+name = "vigilnet-proxy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "SOCKS5 proxy server for VigilNet with E2EE"
+
+[dependencies]
+# Async I/O
+tokio = { workspace = true, features = ["net", "io-util", "sync"] }
+
+# Error handling
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# VigilNet core
+vigilnet-core = { workspace = true }
+
+# VigilNet crypto (Signal Protocol E2EE)
+vigilnet-crypto = { workspace = true }
+
+# Random
+rand = { workspace = true }

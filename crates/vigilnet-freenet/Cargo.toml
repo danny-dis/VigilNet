@@ -1,0 +1,32 @@
+[package]
+name = "vigilnet-freenet"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Internal crates
+vigilnet-crypto = { path = "../vigilnet-crypto" }
+vigilnet-transport = { path = "../vigilnet-transport" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Freenet core
+freenet-core = { version = "0.1", default-features = false }
+
+[features]
+default = []
+# Enable when freenet-core is available
+freenet = ["freenet-core"]

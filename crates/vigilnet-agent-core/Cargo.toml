@@ -1,0 +1,28 @@
+[package]
+name = "vigilnet-agent-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vigilnet-crypto = { workspace = true }
+vigilnet-discovery = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+libp2p = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+bincode.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+uuid = { version = "1.8", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6.0"
+parking_lot = "0.12"
+async-trait.workspace = true
+quinn = "0.11"
+
+[features]
+default = []

@@ -1,0 +1,28 @@
+[package]
+name = "vigilnet-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core orchestration and node logic for VigilNet"
+
+[dependencies]
+vigilnet-crypto = { workspace = true }
+vigilnet-routing = { workspace = true }
+vigilnet-discovery = { workspace = true }
+vigilnet-transport = { workspace = true }
+vigilnet-tun = { workspace = true }
+
+tokio.workspace = true
+libp2p.workspace = true
+serde.workspace = true
+bincode.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+toml.workspace = true
+directories.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

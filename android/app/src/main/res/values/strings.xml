@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">VigilNet</string>
+    <string name="vpn_service_name">VigilNet VPN Service</string>
+</resources>

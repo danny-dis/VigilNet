@@ -1,0 +1,29 @@
+[package]
+name = "vigilnet-agent-research"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Multi-perspective research orchestration for VigilNet agents"
+
+[dependencies]
+vigilnet-agent-core = { workspace = true }
+vigilnet-agent-circles = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+uuid = { version = "1.8", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6.0"
+parking_lot = "0.12"
+futures = "0.3"
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3.10"

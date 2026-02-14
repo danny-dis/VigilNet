@@ -1,0 +1,32 @@
+[package]
+name = "vigilnet-i2p"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Internal crates
+vigilnet-crypto = { path = "../vigilnet-crypto" }
+vigilnet-transport = { path = "../vigilnet-transport" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# I2P SAM protocol client (optional)
+# i2p = { version = "0.2", optional = true }
+
+[features]
+default = []
+# Enable when i2p-rs is available
+# sam = ["i2p"]

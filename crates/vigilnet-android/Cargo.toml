@@ -1,0 +1,57 @@
+[package]
+name = "vigilnet-android"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Internal crates
+vigilnet-core = { path = "../vigilnet-core" }
+vigilnet-crypto = { path = "../vigilnet-crypto" }
+vigilnet-routing = { path = "../vigilnet-routing" }
+vigilnet-transport = { path = "../vigilnet-transport" }
+vigilnet-discovery = { path = "../vigilnet-discovery" }
+vigilnet-proxy = { path = "../vigilnet-proxy" }
+vigilnet-agent-mesh = { path = "../vigilnet-agent-mesh" }
+vigilnet-wireguard = { path = "../vigilnet-wireguard" }
+vigilnet-agent-circles = { path = "../vigilnet-agent-circles" }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = "0.1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = "1.0"
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# JNI bridge (for Android)
+jni = { version = "0.21", optional = true }
+
+# TUN interface (with fd support for Android VpnService)
+# TUN interface (with fd support for Android VpnService)
+tun-rs = { workspace = true }
+
+# Packet parsing
+etherparse = "0.13"
+
+# Userspace TCP/IP stack
+smoltcp = { version = "0.11", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp", "socket-udp"] }
+
+# DNS packet parsing
+simple-dns = "0.7"
+
+[features]
+default = []
+android = ["jni"]

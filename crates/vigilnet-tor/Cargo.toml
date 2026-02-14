@@ -1,0 +1,32 @@
+[package]
+name = "vigilnet-tor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Internal crates
+vigilnet-crypto = { path = "../vigilnet-crypto" }
+vigilnet-transport = { path = "../vigilnet-transport" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Arti Tor client
+# Arti Tor client
+arti-client = { version = "0.16", features = ["tokio", "rustls", "pt-client"] }
+tor-rtcompat = { version = "0.16", features = ["tokio", "rustls"] }
+
+[features]
+default = []

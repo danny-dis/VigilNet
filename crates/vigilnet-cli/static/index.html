@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VigilNet Dashboard</title>
+    <style>
+        :root {
+            --primary: #00ff9d;
+            --bg: #1a1b26;
+            --card: #24283b;
+            --text: #c0caf5;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            max-width: 800px;
+            width: 100%;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--primary);
+        }
+
+        .status-badge {
+            background: rgba(0, 255, 157, 0.1);
+            color: var(--primary);
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 14px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: var(--card);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .card h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            opacity: 0.7;
+        }
+
+        .metric {
+            font-size: 24px;
+            font-weight: bold;
+            color: white;
+        }
+
+        .world-map {
+            background: var(--card);
+            height: 300px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #565f89;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">🛡️ VigilNet</div>
+            <div class="status-badge">● System Active</div>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <h3>PEERS CONNECTED</h3>
+                <div class="metric" id="peers">-</div>
+            </div>
+            <div class="card">
+                <h3>UPTIME</h3>
+                <div class="metric" id="uptime">-</div>
+            </div>
+            <div class="card">
+                <h3>DATA TRANSFERRED</h3>
+                <div class="metric">0 MB</div>
+            </div>
+            <div class="card">
+                <h3>RELAY MODE</h3>
+                <div class="metric" id="relay">OFF</div>
+            </div>
+        </div>
+
+        <div class="world-map">
+            [ Circuit Visualization Placeholder ]
+        </div>
+    </div>
+
+    <script>
+        async function updateStats() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+
+                document.getElementById('peers').innerText = data.peers_count;
+                document.getElementById('relay').innerText = data.relay_active ? "ON" : "OFF";
+
+                // Format uptime
+                const hrs = Math.floor(data.uptime_seconds / 3600);
+                const mins = Math.floor((data.uptime_seconds % 3600) / 60);
+                document.getElementById('uptime').innerText = `${hrs}h ${mins}m`;
+
+            } catch (e) {
+                console.error("Failed to fetch stats", e);
+            }
+        }
+
+        // Update every 2 seconds
+        setInterval(updateStats, 2000);
+        updateStats();
+    </script>
+</body>
+
+</html>
