@@ -6,12 +6,19 @@ use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use parking_lot::RwLock;
 use lru::LruCache;
 use tracing::{debug, info, warn};
 use vigilnet_crypto::{decrypt, encrypt};
 use rand::Rng;
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 const GOSSIP_NONCE_SIZE: usize = 12;
 const GOSSIP_TAG_SIZE: usize = 16;
@@ -188,10 +195,7 @@ impl GossipProtocol {
         let nonce = ciphertext[..GOSSIP_NONCE_SIZE].try_into().ok()?;
         let ciphertext_only = ciphertext[GOSSIP_NONCE_SIZE..].to_vec();
         
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let timestamp = current_timestamp();
         
         Some(EncryptedGossipPayload {
             sender_id: *sender_id,
@@ -331,10 +335,7 @@ impl GossipProtocol {
             peer_info: PeerInfo {
                 peer_id: *sender_id,
                 addresses,
-                signed_timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                signed_timestamp: current_timestamp(),
                 signature: [0u8; 64],
                 proof_of_work: vec![],
             },
@@ -357,10 +358,7 @@ impl GossipProtocol {
             peer_info: PeerInfo {
                 peer_id: *sender_id,
                 addresses: vec![],
-                signed_timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                signed_timestamp: current_timestamp(),
                 signature: [0u8; 64],
                 proof_of_work: vec![],
             },
@@ -383,10 +381,7 @@ impl GossipProtocol {
             peer_info: PeerInfo {
                 peer_id: *sender_id,
                 addresses: vec![],
-                signed_timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                signed_timestamp: current_timestamp(),
                 signature: [0u8; 64],
                 proof_of_work: vec![],
             },
@@ -409,10 +404,7 @@ impl GossipProtocol {
             peer_info: PeerInfo {
                 peer_id: *sender_id,
                 addresses: vec![],
-                signed_timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                signed_timestamp: current_timestamp(),
                 signature: [0u8; 64],
                 proof_of_work: vec![],
             },
@@ -435,10 +427,7 @@ impl GossipProtocol {
             peer_info: PeerInfo {
                 peer_id: *sender_id,
                 addresses: vec![],
-                signed_timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                signed_timestamp: current_timestamp(),
                 signature: [0u8; 64],
                 proof_of_work: vec![],
             },
@@ -461,10 +450,7 @@ impl GossipProtocol {
             peer_info: PeerInfo {
                 peer_id: *sender_id,
                 addresses: vec![],
-                signed_timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                signed_timestamp: current_timestamp(),
                 signature: [0u8; 64],
                 proof_of_work: vec![],
             },

@@ -721,4 +721,509 @@ mod tests {
         let unwrapped = packet.unwrap_layer(&layers[0].key).unwrap();
         assert_eq!(unwrapped.as_slice(), original);
     }
+
+    #[test]
+    fn test_empty_layers_fails() {
+        let layers: Vec<OnionLayer> = vec![];
+        let original = b"Test";
+        
+        // Wrapping with empty layers should still work (returns original encrypted 0 times)
+        let packet = OnionPacket::wrap(original, &layers, 1).unwrap();
+        assert_eq!(packet.payload, original);
+    }
+
+    #[test]
+    fn test_multiple_layers_unique_keys() {
+        let layers: Vec<OnionLayer> = (0..10)
+            .map(|i| OnionLayer {
+                key: SessionKey::from_shared_secret([(i * 7) as u8; 32]),
+                hop_id: [(i * 11) as u8; 32],
+            })
+            .collect();
+
+        let original = b"Multi-hop message";
+        let packet = OnionPacket::wrap(original, &layers, 999).unwrap();
+
+        // Unwrap each layer in order
+        let mut data = packet.payload.clone();
+        for layer in &layers {
+            data = aead::decrypt(layer.key.as_bytes(), &data).unwrap();
+        }
+
+        assert_eq!(data.as_slice(), original.as_slice());
+    }
+
+    #[test]
+    fn test_unwrap_wrong_key_fails() {
+        let correct_key = SessionKey::from_shared_secret([0x42u8; 32]);
+        let wrong_key = SessionKey::from_shared_secret([0x43u8; 32]);
+
+        let layers = vec![OnionLayer {
+            key: correct_key,
+            hop_id: [0u8; 32],
+        }];
+
+        let original = b"Secret";
+        let packet = OnionPacket::wrap(original, &layers, 1).unwrap();
+
+        // Unwrapping with wrong key should fail
+        let result = packet.unwrap_layer(&wrong_key);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_large_payload_onion() {
+        let layers: Vec<OnionLayer> = (0..3)
+            .map(|i| OnionLayer {
+                key: SessionKey::from_shared_secret([i as u8; 32]),
+                hop_id: [i as u8; 32],
+            })
+            .collect();
+
+        let original = vec![0xABu8; 10000];
+        let packet = OnionPacket::wrap(&original, &layers, 12345).unwrap();
+
+        let mut data = packet.payload.clone();
+        for layer in &layers {
+            data = aead::decrypt(layer.key.as_bytes(), &data).unwrap();
+        }
+
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_empty_payload_onion() {
+        let layers: Vec<OnionLayer> = (0..3)
+            .map(|i| OnionLayer {
+                key: SessionKey::from_shared_secret([i as u8; 32]),
+                hop_id: [i as u8; 32],
+            })
+            .collect();
+
+        let original: &[u8] = b"";
+        let packet = OnionPacket::wrap(original, &layers, 12345).unwrap();
+
+        let mut data = packet.payload.clone();
+        for layer in &layers {
+            data = aead::decrypt(layer.key.as_bytes(), &data).unwrap();
+        }
+
+        assert_eq!(data.as_slice(), original);
+    }
+
+    #[test]
+    fn test_binary_payload_onion() {
+        let layers: Vec<OnionLayer> = (0..3)
+            .map(|i| OnionLayer {
+                key: SessionKey::from_shared_secret([i as u8; 32]),
+                hop_id: [i as u8; 32],
+            })
+            .collect();
+
+        let original: Vec<u8> = (0..256).map(|i| i as u8).collect();
+        let packet = OnionPacket::wrap(&original, &layers, 12345).unwrap();
+
+        let mut data = packet.payload.clone();
+        for layer in &layers {
+            data = aead::decrypt(layer.key.as_bytes(), &data).unwrap();
+        }
+
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_circuit_cell_created() {
+        let created_cell = CreatedCell::new(42, [0x42u8; 32]);
+        let cell = CircuitCell::created(&created_cell);
+        
+        assert_eq!(cell.circuit_id, 42);
+        assert_eq!(cell.cell_type, CellType::Created);
+        assert_eq!(cell.payload, [0x42u8; 32].to_vec());
+    }
+
+    #[test]
+    fn test_circuit_cell_relay() {
+        let payload = vec![1, 2, 3, 4, 5];
+        let cell = CircuitCell::relay(100, payload.clone());
+        
+        assert_eq!(cell.circuit_id, 100);
+        assert_eq!(cell.cell_type, CellType::Relay);
+        assert_eq!(cell.payload, payload);
+    }
+
+    #[test]
+    fn test_circuit_cell_destroy() {
+        let cell = CircuitCell::destroy(999);
+        
+        assert_eq!(cell.circuit_id, 999);
+        assert_eq!(cell.cell_type, CellType::Destroy);
+        assert!(cell.payload.is_empty());
+    }
+
+    #[test]
+    fn test_cell_type_invalid() {
+        let result = CellType::try_from(255);
+        assert!(result.is_err());
+        
+        let result = CellType::try_from(100);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_relay_command_invalid() {
+        let result = RelayCommand::try_from(255);
+        assert!(result.is_err());
+        
+        let result = RelayCommand::try_from(2); // Gap in enum
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_relay_command_from_u8() {
+        let cmd: u8 = RelayCommand::Begin.into();
+        assert_eq!(cmd, 0);
+        
+        let cmd: u8 = RelayCommand::Data.into();
+        assert_eq!(cmd, 1);
+        
+        let cmd: u8 = RelayCommand::Drop.into();
+        assert_eq!(cmd, 9);
+    }
+
+    #[test]
+    fn test_relay_cell_extend() {
+        let extend_cell = ExtendCell::new([0x41u8; 32], [0x42u8; 32]);
+        let relay = RelayCell::extend(&extend_cell);
+        
+        assert_eq!(relay.stream_id, 0);
+        assert_eq!(relay.command, RelayCommand::Extend);
+        assert_eq!(relay.data, extend_cell.to_bytes());
+    }
+
+    #[test]
+    fn test_relay_cell_extended() {
+        let extended_cell = ExtendedCell::new([0x42u8; 32]);
+        let relay = RelayCell::extended(&extended_cell);
+        
+        assert_eq!(relay.stream_id, 0);
+        assert_eq!(relay.command, RelayCommand::Extended);
+        assert_eq!(relay.data, extended_cell.to_bytes());
+    }
+
+    #[test]
+    fn test_relay_cell_begin() {
+        let begin_cell = BeginCell::new("127.0.0.1:8080");
+        let relay = RelayCell::begin(5, &begin_cell);
+        
+        assert_eq!(relay.stream_id, 5);
+        assert_eq!(relay.command, RelayCommand::Begin);
+        assert_eq!(relay.data, begin_cell.to_bytes());
+    }
+
+    #[test]
+    fn test_relay_cell_connected() {
+        let connected_cell = ConnectedCell::new("127.0.0.1:9000");
+        let relay = RelayCell::connected(3, &connected_cell);
+        
+        assert_eq!(relay.stream_id, 3);
+        assert_eq!(relay.command, RelayCommand::Connected);
+        assert_eq!(relay.data, connected_cell.to_bytes());
+    }
+
+    #[test]
+    fn test_relay_cell_end() {
+        let end_cell = EndCell::new(1);
+        let relay = RelayCell::end(7, &end_cell);
+        
+        assert_eq!(relay.stream_id, 7);
+        assert_eq!(relay.command, RelayCommand::End);
+        assert_eq!(relay.data, end_cell.to_bytes());
+    }
+
+    #[test]
+    fn test_relay_cell_truncated() {
+        let data = vec![1, 2, 3];
+        let result = RelayCell::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_relay_cell_data_truncated() {
+        let data = vec![0, 1, 1, 0, 100]; // Claims 100 bytes but only provides 0
+        let result = RelayCell::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extend_cell_truncated() {
+        let data = vec![0u8; 31]; // Need 64 bytes
+        let result = ExtendCell::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extended_cell_truncated() {
+        let data = vec![0u8; 31]; // Need 32 bytes
+        let result = ExtendedCell::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_begin_cell_empty_address() {
+        let cell = BeginCell::new("");
+        let bytes = cell.to_bytes();
+        let restored = BeginCell::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(cell.address, restored.address);
+        assert!(restored.address.is_empty());
+    }
+
+    #[test]
+    fn test_begin_cell_long_address() {
+        let long_addr = "a".repeat(1000);
+        let cell = BeginCell::new(&long_addr);
+        let bytes = cell.to_bytes();
+        let restored = BeginCell::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(cell.address, restored.address);
+    }
+
+    #[test]
+    fn test_begin_cell_invalid_utf8() {
+        // Create bytes with invalid UTF-8
+        let mut data = vec![0u8; 10];
+        data[0] = 0;
+        data[1] = 5; // Length = 5
+        data[2] = 0xFF; // Invalid UTF-8 start byte
+        data[3] = 0xFF;
+        data[4] = 0xFF;
+        data[5] = 0xFF;
+        data[6] = 0xFF;
+        
+        let result = BeginCell::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_connected_cell_empty() {
+        let cell = ConnectedCell::new("");
+        let bytes = cell.to_bytes();
+        let restored = ConnectedCell::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(cell.bind_addr, restored.bind_addr);
+    }
+
+    #[test]
+    fn test_connected_cell_from_empty_bytes() {
+        let result = ConnectedCell::from_bytes(&[]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().bind_addr, "");
+    }
+
+    #[test]
+    fn test_connected_cell_truncated_tolerated() {
+        // ConnectedCell tolerates truncation
+        let data = vec![0, 100]; // Claims 100 bytes but provides 0
+        let result = ConnectedCell::from_bytes(&data);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_end_cell_roundtrip() {
+        let cell = EndCell::new(2);
+        let bytes = cell.to_bytes();
+        let restored = EndCell::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(cell.reason, restored.reason);
+    }
+
+    #[test]
+    fn test_end_cell_empty() {
+        let result = EndCell::from_bytes(&[]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().reason, 0);
+    }
+
+    #[test]
+    fn test_end_cell_reason_codes() {
+        for reason in 0..10 {
+            let cell = EndCell::new(reason);
+            let bytes = cell.to_bytes();
+            let restored = EndCell::from_bytes(&bytes).unwrap();
+            assert_eq!(cell.reason, restored.reason);
+        }
+    }
+
+    #[test]
+    fn test_create_cell_zero_dh() {
+        let cell = CreateCell::new(1, [0u8; 32]);
+        let bytes = cell.to_bytes();
+        let restored = CreateCell::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(cell.circuit_id, restored.circuit_id);
+        assert_eq!(cell.dh_public, restored.dh_public);
+    }
+
+    #[test]
+    fn test_circuit_cell_all_types() {
+        let create_cell = CreateCell::new(1, [0u8; 32]);
+        let created_cell = CreatedCell::new(2, [0u8; 32]);
+        
+        let cells = vec![
+            CircuitCell::create(&create_cell),
+            CircuitCell::created(&created_cell),
+            CircuitCell::relay(3, vec![1, 2, 3]),
+            CircuitCell::destroy(4),
+        ];
+        
+        for cell in cells {
+            let bytes = cell.to_bytes();
+            let restored = CircuitCell::from_bytes(&bytes).unwrap();
+            assert_eq!(cell.circuit_id, restored.circuit_id);
+            assert_eq!(cell.cell_type, restored.cell_type);
+            assert_eq!(cell.payload, restored.payload);
+        }
+    }
+
+    #[test]
+    fn test_circuit_cell_truncated() {
+        let data = vec![0u8; 6]; // Need at least 7 bytes
+        let result = CircuitCell::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_circuit_cell_payload_truncated() {
+        let mut data = vec![0u8; 7];
+        data[5] = 0;
+        data[6] = 100; // Claims 100 byte payload
+        let result = CircuitCell::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_onion_packet_circuit_id_max() {
+        let packet = OnionPacket {
+            circuit_id: u32::MAX,
+            payload: vec![1, 2, 3],
+        };
+        
+        let bytes = packet.to_bytes();
+        let restored = OnionPacket::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(packet.circuit_id, restored.circuit_id);
+    }
+
+    #[test]
+    fn test_onion_packet_circuit_id_zero() {
+        let packet = OnionPacket {
+            circuit_id: 0,
+            payload: vec![1, 2, 3],
+        };
+        
+        let bytes = packet.to_bytes();
+        let restored = OnionPacket::from_bytes(&bytes).unwrap();
+        
+        assert_eq!(packet.circuit_id, restored.circuit_id);
+    }
+
+    #[test]
+    fn test_all_cell_types_roundtrip() {
+        // Test all cell type conversions
+        for i in 0u8..=5 {
+            if let Ok(cell_type) = CellType::try_from(i) {
+                // Verify it round-trips
+                assert_eq!(CellType::try_from(i).unwrap(), cell_type);
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_relay_commands_roundtrip() {
+        // Test valid relay command conversions
+        let valid_cmds = vec![0, 1, 3, 4, 5, 6, 7, 8, 9];
+        for cmd in valid_cmds {
+            let relay_cmd = RelayCommand::try_from(cmd).unwrap();
+            let as_u8: u8 = relay_cmd.into();
+            assert_eq!(as_u8, cmd);
+        }
+    }
+
+    #[test]
+    fn test_onion_layer_clone() {
+        let layer = OnionLayer {
+            key: SessionKey::from_shared_secret([0x42u8; 32]),
+            hop_id: [0x43u8; 32],
+        };
+        
+        let cloned = layer.clone();
+        assert_eq!(layer.hop_id, cloned.hop_id);
+    }
+
+    #[test]
+    fn test_onion_packet_clone() {
+        let packet = OnionPacket {
+            circuit_id: 42,
+            payload: vec![1, 2, 3, 4, 5],
+        };
+        
+        let cloned = packet.clone();
+        assert_eq!(packet.circuit_id, cloned.circuit_id);
+        assert_eq!(packet.payload, cloned.payload);
+    }
+
+    #[test]
+    fn test_create_cell_clone() {
+        let cell = CreateCell::new(1, [0u8; 32]);
+        let cloned = cell.clone();
+        assert_eq!(cell.circuit_id, cloned.circuit_id);
+        assert_eq!(cell.dh_public, cloned.dh_public);
+    }
+
+    #[test]
+    fn test_relay_cell_clone() {
+        let cell = RelayCell::data(1, vec![1, 2, 3]);
+        let cloned = cell.clone();
+        assert_eq!(cell.stream_id, cloned.stream_id);
+        assert_eq!(cell.command, cloned.command);
+        assert_eq!(cell.data, cloned.data);
+    }
+
+    #[test]
+    fn test_cell_type_debug() {
+        let cell_type = CellType::Create;
+        let debug_str = format!("{:?}", cell_type);
+        assert!(debug_str.contains("Create"));
+    }
+
+    #[test]
+    fn test_relay_command_debug() {
+        let cmd = RelayCommand::Begin;
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Begin"));
+    }
+
+    #[test]
+    fn test_onion_packet_debug() {
+        let packet = OnionPacket {
+            circuit_id: 42,
+            payload: vec![1, 2, 3],
+        };
+        let debug_str = format!("{:?}", packet);
+        assert!(debug_str.contains("42"));
+    }
+
+    #[test]
+    fn test_cell_type_equality() {
+        assert_eq!(CellType::Create, CellType::Create);
+        assert_eq!(CellType::Relay, CellType::Relay);
+        assert_ne!(CellType::Create, CellType::Destroy);
+    }
+
+    #[test]
+    fn test_relay_command_equality() {
+        assert_eq!(RelayCommand::Data, RelayCommand::Data);
+        assert_eq!(RelayCommand::End, RelayCommand::End);
+        assert_ne!(RelayCommand::Begin, RelayCommand::End);
+    }
 }

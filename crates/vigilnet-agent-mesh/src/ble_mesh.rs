@@ -49,8 +49,8 @@ impl BlePeer {
         let id = uuid::Uuid::new_v4().to_string();
         let last_seen = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
         Self {
             id,
@@ -307,8 +307,8 @@ impl BleMeshMessage {
         let message_id = uuid::Uuid::new_v4().to_string();
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
         Self {
             source_id,

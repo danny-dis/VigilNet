@@ -1,0 +1,156 @@
+# Security-focused Semgrep Rules for VigilNet
+
+rules:
+  # Cryptographic Security
+  - id: unsafe-crypto-implementation
+    languages: [rust]
+    message: "Cryptographic operations should not use unsafe code"
+    severity: ERROR
+    patterns:
+      - pattern: unsafe { ... crypto ... }
+    metadata:
+      category: security
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      
+  - id: hardcoded-crypto-key
+    languages: [rust]
+    message: "Hardcoded cryptographic keys detected"
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: let $VAR = "...key..."
+          - pattern: const $VAR: &str = "...key..."
+          - pattern: static $VAR: &str = "...key..."
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      
+  - id: todo-security-issue
+    languages: [rust]
+    message: "Security TODO found - must be resolved before release"
+    severity: WARNING
+    patterns:
+      - pattern-regex: (?i)TODO.*security|TODO.*FIXME.*sec|TODO.*crypto
+    metadata:
+      category: security
+      
+  # Memory Safety
+  - id: unsafe-block-usage
+    languages: [rust]
+    message: "Unsafe block detected - verify necessity and safety"
+    severity: WARNING
+    patterns:
+      - pattern: unsafe { ... }
+    metadata:
+      category: security
+      cwe: "CWE-758: Reliance on Undefined Behavior"
+      
+  # Network Security
+  - id: unvalidated-network-input
+    languages: [rust]
+    message: "Network input should be validated before processing"
+    severity: WARNING
+    patterns:
+      - pattern: |
+          fn $FUNC(..., $DATA: &[u8], ...) {
+            ...
+            $DATA[...]
+            ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-20: Improper Input Validation"
+      
+  - id: todo-mitm-protection
+    languages: [rust]
+    message: "Verify MITM protection is implemented"
+    severity: WARNING
+    patterns:
+      - pattern-regex: (?i)handshake|session.*establish
+      - pattern-not-regex: (?i)verify|authenticate|check.*cert
+    metadata:
+      category: security
+      
+  # Error Handling
+  - id: panics-in-crypto
+    languages: [rust]
+    message: "Avoid panics in cryptographic code - use proper error handling"
+    severity: WARNING
+    patterns:
+      - pattern-either:
+          - pattern: panic!(...)
+          - pattern: unwrap()
+          - pattern: expect(...)
+      - pattern-inside: |
+          fn $FUNC(...) ... {
+            ...
+            crypto
+            ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-391: Unchecked Error Condition"
+      
+  # Logging
+  - id: sensitive-data-logging
+    languages: [rust]
+    message: "Potential sensitive data in log statement"
+    severity: WARNING
+    patterns:
+      - pattern-either:
+          - pattern: |
+              tracing::info!(..., $DATA, ...)
+          - pattern: |
+              tracing::debug!(..., $DATA, ...)
+          - pattern: |
+              tracing::trace!(..., $DATA, ...)
+          - pattern: |
+              println!(..., $DATA, ...)
+          - pattern: |
+              eprintln!(..., $DATA, ...)
+      - pattern-regex: (?i)key|secret|password|token|private|seed|entropy
+    metadata:
+      category: security
+      cwe: "CWE-532: Insertion of Sensitive Information into Log File"
+      
+  # Randomness
+  - id: weak-randomness
+    languages: [rust]
+    message: "Use cryptographically secure random number generator"
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: std::rand::...
+          - pattern: rand::thread_rng()
+          - pattern: fastrand::...
+    metadata:
+      category: security
+      cwe: "CWE-338: Use of Cryptographically Weak PRNG"
+      
+  # Time
+  - id: non-constant-time-comparison
+    languages: [rust]
+    message: "Use constant-time comparison for cryptographic values"
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: $A == $B
+          - pattern: $A != $B
+      - pattern-regex: (?i)signature|mac|tag|hash|key
+    metadata:
+      category: security
+      cwe: "CWE-208: Observable Timing Discrepancy"
+      
+  # Serialization
+  - id: unsafe-deserialization
+    languages: [rust]
+    message: "Verify deserialization handles malformed input safely"
+    severity: WARNING
+    patterns:
+      - pattern-either:
+          - pattern: bincode::deserialize(...)
+          - pattern: serde_json::from_slice(...)
+          - pattern: Message::deserialize(...)
+    metadata:
+      category: security
+      cwe: "CWE-502: Deserialization of Untrusted Data"

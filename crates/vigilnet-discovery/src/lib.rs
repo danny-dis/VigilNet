@@ -7,6 +7,8 @@
 //! - Combined behaviour for libp2p integration
 //! - Sybil defense via Proof of Work and reputation
 
+use tracing::{debug, error, info, instrument, trace, warn};
+
 pub mod behaviour;
 pub mod dht;
 pub mod gossip;
@@ -61,7 +63,9 @@ pub struct CombinedDiscovery {
 }
 
 impl CombinedDiscovery {
+    #[instrument(level = "debug")]
     pub fn new() -> Self {
+        debug!("Creating new CombinedDiscovery");
         Self {
             dht: None,
             mdns: None,
@@ -69,72 +73,120 @@ impl CombinedDiscovery {
         }
     }
 
+    #[instrument(skip(self, dht), level = "debug")]
     pub fn with_dht(mut self, dht: DhtDiscovery) -> Self {
+        debug!("Adding DHT discovery");
         self.dht = Some(dht);
         self
     }
 
+    #[instrument(skip(self, mdns), level = "debug")]
     pub fn with_mdns(mut self, mdns: MdnsDiscovery) -> Self {
+        debug!("Adding mDNS discovery");
         self.mdns = Some(mdns);
         self
     }
 
+    #[instrument(skip(self, gossip), level = "debug")]
     pub fn with_gossip(mut self, gossip: GossipProtocol) -> Self {
+        debug!("Adding Gossip discovery");
         self.gossip = Some(gossip);
         self
     }
 
+    #[instrument(skip(self), level = "info")]
     pub fn start_all(&mut self) -> Result<(), DiscoveryError> {
+        info!("Starting all discovery mechanisms");
+
         if let Some(dht) = &mut self.dht {
+            trace!("Starting DHT discovery");
             dht.start()?;
+        } else {
+            trace!("DHT discovery not configured");
         }
+
         if let Some(mdns) = &mut self.mdns {
+            trace!("Starting mDNS discovery");
             mdns.start()?;
+        } else {
+            trace!("mDNS discovery not configured");
         }
+
         if let Some(gossip) = &mut self.gossip {
+            trace!("Starting Gossip discovery");
             gossip.start()?;
+        } else {
+            trace!("Gossip discovery not configured");
         }
+
+        info!("All discovery mechanisms started");
         Ok(())
     }
 
+    #[instrument(skip(self), level = "info")]
     pub fn stop_all(&mut self) -> Result<(), DiscoveryError> {
+        info!("Stopping all discovery mechanisms");
+
         if let Some(dht) = &mut self.dht {
+            trace!("Stopping DHT discovery");
             dht.stop()?;
         }
+
         if let Some(mdns) = &mut self.mdns {
+            trace!("Stopping mDNS discovery");
             mdns.stop()?;
         }
+
         if let Some(gossip) = &mut self.gossip {
+            trace!("Stopping Gossip discovery");
             gossip.stop()?;
         }
+
+        info!("All discovery mechanisms stopped");
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub fn all_peers(&self) -> HashSet<PeerId> {
         let mut peers = HashSet::new();
-        
+
         if let Some(dht) = &self.dht {
-            peers.extend(dht.known_peers());
+            let dht_peers = dht.known_peers();
+            trace!(count = dht_peers.len(), "Adding DHT peers");
+            peers.extend(dht_peers);
         }
+
         if let Some(mdns) = &self.mdns {
-            peers.extend(mdns.known_peers());
+            let mdns_peers = mdns.known_peers();
+            trace!(count = mdns_peers.len(), "Adding mDNS peers");
+            peers.extend(mdns_peers);
         }
+
         if let Some(gossip) = &self.gossip {
-            peers.extend(gossip.known_peers());
+            let gossip_peers = gossip.known_peers();
+            trace!(count = gossip_peers.len(), "Adding Gossip peers");
+            peers.extend(gossip_peers);
         }
-        
+
+        debug!(total_peers = peers.len(), "Retrieved all peers from discovery");
         peers
     }
 
+    #[instrument(skip(self), level = "trace")]
     pub fn dht_mut(&mut self) -> Option<&mut DhtDiscovery> {
+        trace!(has_dht = self.dht.is_some(), "Retrieving DHT discovery");
         self.dht.as_mut()
     }
 
+    #[instrument(skip(self), level = "trace")]
     pub fn mdns_mut(&mut self) -> Option<&mut MdnsDiscovery> {
+        trace!(has_mdns = self.mdns.is_some(), "Retrieving mDNS discovery");
         self.mdns.as_mut()
     }
 
+    #[instrument(skip(self), level = "trace")]
     pub fn gossip_mut(&mut self) -> Option<&mut GossipProtocol> {
+        trace!(has_gossip = self.gossip.is_some(), "Retrieving Gossip discovery");
         self.gossip.as_mut()
     }
 }

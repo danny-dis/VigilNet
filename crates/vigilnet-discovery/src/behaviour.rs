@@ -107,7 +107,7 @@ pub struct VigilNetBehaviour {
 }
 
 impl VigilNetBehaviour {
-    pub fn new(local_peer_id: PeerId, local_key: &libp2p::identity::Keypair) -> Self {
+    pub fn new(local_peer_id: PeerId, local_key: &libp2p::identity::Keypair) -> Result<Self, crate::DiscoveryError> {
         let store = kad::store::MemoryStore::new(local_peer_id);
         let mut kad_config = kad::Config::default();
         kad_config.set_protocol_names(vec![
@@ -121,7 +121,7 @@ impl VigilNetBehaviour {
         let mdns = mdns::tokio::Behaviour::new(
             mdns::Config::default(),
             local_peer_id,
-        ).expect("Failed to create mDNS behaviour");
+        ).map_err(|e| crate::DiscoveryError::MdnsError(format!("Failed to create mDNS behaviour: {}", e)))?;
 
         let identify = identify::Behaviour::new(
             identify::Config::new(
@@ -138,12 +138,12 @@ impl VigilNetBehaviour {
             .message_id_fn(gossipsub::MessageId::from)
             .max_transmit_size(1024 * 1024)
             .build()
-            .expect("Valid gossipsub config");
+            .map_err(|e| crate::DiscoveryError::GossipError(format!("Failed to build gossipsub config: {}", e)))?;
 
         let gossipsub = gossipsub::Behaviour::new(
             gossipsub::MessageAuthenticity::Signed(local_key.clone()),
             gossipsub_config,
-        ).expect("Failed to create gossipsub behaviour");
+        ).map_err(|e| crate::DiscoveryError::GossipError(format!("Failed to create gossipsub behaviour: {}", e)))?;
 
         let circuit = libp2p::request_response::Behaviour::new(
             std::marker::PhantomData::<vigilnet_routing::protocol::CircuitCodec>,
@@ -154,13 +154,13 @@ impl VigilNetBehaviour {
             libp2p::request_response::Config::default(),
         );
 
-        Self {
+        Ok(Self {
             kademlia,
             mdns,
             identify,
             gossipsub,
             circuit,
-        }
+        })
     }
 
     pub fn add_address(&mut self, peer_id: &PeerId, addr: Multiaddr) {

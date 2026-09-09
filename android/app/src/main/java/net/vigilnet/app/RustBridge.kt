@@ -8,7 +8,7 @@ class RustBridge {
     }
 
     // Initialize the Rust engine
-    external fun init(): Int
+    external fun init(storagePath: String): Int
 
     // Shutdown the engine
     external fun shutdown()
@@ -23,6 +23,26 @@ class RustBridge {
     external fun startVpn(): Int
     external fun stopVpn(): Int
     
+    // Notify about network changes
+    external fun onNetworkChanged(isWifi: Boolean, isMobile: Boolean): Int
+    
     // Battery management
     external fun updateBattery(level: Int, charging: Boolean)
+
+    // Tor Configuration
+    external fun setTorBridges(bridges: Array<String>)
+
+    // Split Tunneling
+    external fun addExcludedApp(packageName: String): Int
+    external fun removeExcludedApp(packageName: String): Int
+    external fun addExcludedDomain(domain: String): Int
+    external fun removeExcludedDomain(domain: String): Int
+
+    // Multi-Hop Routing
+    external fun setRoutingChain(chainIds: IntArray): Int
+
+    // Circle Management
+    external fun createCircle(name: String, path: String): String
+    external fun createInvite(circleId: String, path: String): String
+    external fun joinCircle(inviteJson: String, path: String): String
 }

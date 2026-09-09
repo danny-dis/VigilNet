@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, instrument, trace, warn};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
@@ -66,12 +66,12 @@ impl MdnsDiscovery {
         self
     }
 
-    pub fn create_behaviour(&self, local_peer_id: PeerId) -> MdnsBehaviour {
+    pub fn create_behaviour(&self, local_peer_id: PeerId) -> Result<MdnsBehaviour, DiscoveryError> {
         let config = MdnsConfig::default()
             .with_ttl(Duration::from_secs(MDNS_TTL_SECS));
         
         MdnsBehaviour::new(config, local_peer_id)
-            .expect("Failed to create mDNS behaviour")
+            .map_err(|e| DiscoveryError::MdnsError(format!("Failed to create mDNS behaviour: {}", e)))
     }
 
     pub fn set_event_sender(&mut self, tx: mpsc::Sender<MdnsEvent>) {

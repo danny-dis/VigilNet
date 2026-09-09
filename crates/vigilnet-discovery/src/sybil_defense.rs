@@ -3,10 +3,18 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use parking_lot::RwLock;
 use tracing::{debug, info, warn};
 
 const DEFAULT_DIFFICULTY: u32 = 20;
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 const MAX_REPUTATION_SCORE: f64 = 100.0;
 const MIN_REPUTATION_SCORE: f64 = -100.0;
 const REPUTATION_DECAY_HOURS: u64 = 24;
@@ -55,10 +63,7 @@ impl ProofOfWork {
     }
 
     pub fn generate_proof(&self, public_key_bytes: &[u8]) -> Option<PoWProof> {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let timestamp = current_timestamp();
         
         let mut nonce = self.nonce.fetch_add(1, Ordering::Relaxed);
         
@@ -110,10 +115,7 @@ pub struct PeerReputation {
 
 impl PeerReputation {
     pub fn new(peer_id: PeerId) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = current_timestamp();
         
         Self {
             peer_id,
@@ -130,19 +132,13 @@ impl PeerReputation {
     pub fn record_successful_interaction(&mut self) {
         self.successful_interactions += 1;
         self.score = (self.score + 0.1).min(MAX_REPUTATION_SCORE);
-        self.last_seen = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        self.last_seen = current_timestamp();
     }
 
     pub fn record_failed_interaction(&mut self) {
         self.failed_interactions += 1;
         self.score = (self.score - 1.0).max(MIN_REPUTATION_SCORE);
-        self.last_seen = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        self.last_seen = current_timestamp();
     }
 
     pub fn record_relay_usage(&mut self) {
@@ -156,10 +152,7 @@ impl PeerReputation {
     }
 
     pub fn decay(&mut self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = current_timestamp();
         
         let hours_since_last_seen = (now - self.last_seen) / 3600;
         if hours_since_last_seen > 0 {
@@ -272,10 +265,7 @@ impl RateLimiter {
     }
 
     pub fn check_rate_limit(&self, peer_id: &PeerId) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = current_timestamp();
         
         let mut requests = self.requests_per_peer.write();
         
@@ -295,10 +285,7 @@ impl RateLimiter {
     }
 
     pub fn record_request(&self, peer_id: &PeerId) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = current_timestamp();
         
         let mut requests = self.requests_per_peer.write();
         let timestamps = requests.entry(*peer_id).or_insert_with(Vec::new);
@@ -313,10 +300,7 @@ impl RateLimiter {
     }
 
     pub fn clear_expired(&self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = current_timestamp();
         
         let mut requests = self.requests_per_peer.write();
         for timestamps in requests.values_mut() {
@@ -362,7 +346,7 @@ mod tests {
         let public_key = vec![0u8; 32];
         let proof = pow.generate_proof(&public_key);
         assert!(proof.is_some());
-        assert!(pow.verify_with_proof(&proof.unwrap()));
+        assert!(pow.verify_with_proof(&proof.expect("Proof should be generated")));
     }
 
     #[test]

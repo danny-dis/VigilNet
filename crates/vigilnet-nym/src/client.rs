@@ -68,7 +68,11 @@ impl NymClient {
         self.sdk_client = Some(client);
         self.state = NymState::Connected;
         
-        info!("Connected to Nym mixnet. Address: {}", self.address.as_ref().unwrap());
+        if let Some(ref addr) = self.address {
+            info!("Connected to Nym mixnet. Address: {}", addr);
+        } else {
+            info!("Connected to Nym mixnet");
+        }
         Ok(())
     }
 
@@ -83,8 +87,9 @@ impl NymClient {
 
         info!("Sending {} bytes via Nym mixnet to {}", data.len(), recipient);
         
-        self.sdk_client.as_ref().unwrap()
-            .send_plain_message(address, data)
+        let client = self.sdk_client.as_ref()
+            .ok_or_else(|| crate::NymError::NotConnected("SDK client not initialized".into()))?;
+        client.send_plain_message(address, data)
             .await
             .map_err(|e| crate::NymError::RoutingFailed(e.to_string()))?;
             
@@ -97,7 +102,9 @@ impl NymClient {
             return Err(crate::NymError::NotConnected("Not connected".into()));
         }
 
-        if let Some(mut msg) = self.sdk_client.as_mut().unwrap().wait_for_messages().await {
+        let client = self.sdk_client.as_mut()
+            .ok_or_else(|| crate::NymError::NotConnected("SDK client not initialized".into()))?;
+        if let Some(mut msg) = client.wait_for_messages().await {
             if let Some(first) = msg.pop() {
                 // Return sender (if available/anonymous) and data
                 return Ok(("anonymous".to_string(), first.message));

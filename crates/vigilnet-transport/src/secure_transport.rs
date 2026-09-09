@@ -553,9 +553,11 @@ mod tests {
     #[tokio::test]
     async fn test_session_manager() {
         let manager = SessionManager::new();
-        manager.generate_one_time_keys(10).await.unwrap();
+        manager.generate_one_time_keys(10).await
+            .expect("Failed to generate one-time keys");
 
-        let bundle = manager.get_prekey_bundle().await.unwrap();
+        let bundle = manager.get_prekey_bundle().await
+            .expect("Failed to get prekey bundle");
         assert_eq!(bundle.identity_key, manager.identity_public());
     }
 
@@ -565,13 +567,15 @@ mod tests {
         let secure = SecureTransport::new(inner);
 
         assert!(secure.is_enabled());
-        secure.session_manager().generate_one_time_keys(5).await.unwrap();
+        secure.session_manager().generate_one_time_keys(5).await
+            .expect("Failed to generate one-time keys");
     }
 
     #[tokio::test]
     async fn test_session_stats() {
         let manager = SessionManager::new();
-        manager.initialize().await.unwrap();
+        manager.initialize().await
+            .expect("Failed to initialize session manager");
 
         let stats = manager.stats().await;
         assert_eq!(stats.active_sessions, 0);

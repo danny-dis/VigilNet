@@ -1,78 +1,76 @@
-# VigilNet
+# 🛡️ VigilNet: The Obsidian Network
 
-A privacy-first P2P tunneling network with onion routing, system-wide VPN functionality, and offline mesh fallback.
+**VigilNet** is a state-of-the-art, privacy-hardened networking engine for Android and beyond. It combines multiple anonymity layers (Tor, I2P, Nym) with high-performance WireGuard tunneling and an offline mesh fallback into a single, cohesive "Obsidian" experience.
 
-## Features
+---
 
-- 🧅 **Onion Routing** - Multi-hop encrypted circuits (3-10 hops)
-- 🌐 **Decentralized** - No central servers, fully P2P mesh
-- 🔐 **End-to-End Encryption** - AES-GCM with ephemeral X25519 keys
-- 📡 **Multiple Discovery** - DHT, mDNS, and gossip protocols
-- 🖧 **System VPN** - TUN interface for all IP traffic
-- 📴 **Offline Fallback** - BLE/Wi-Fi mesh when Internet fails
-- 🔒 **Privacy Circles** - Private overlay networks via shared secrets
+## 🚀 Key Capabilities
 
-## Why VigilNet?
+### 🌈 Multi-Backend Routing
+Route your traffic through any combination of privacy networks, or chain them together for ultimate anonymity.
+- **Onion Routing (Tor)**: Powered by the `arti` library for reliable, circuit-based anonymity.
+- **Invisible Internet (I2P)**: Integrated SAM protocol for hidden service access.
+- **Mixnet (Nym)**: Metadata-resistant mixnet routing for high-latency requirements.
+- **Secure VPN (WireGuard)**: Zero-trust tunneling using the `boringtun` userspace implementation.
+- **Decentralized Storage (Freenet)**: Fully P2P web content delivery.
+- **Mesh Fallback**: BLE and Wi-Fi Direct gossip protocols for communication when the ISP fails.
 
-### For Normal Users
-- **Invisible Browsing**: Your traffic is encrypted and bounces through 3 random nodes. Websites can't see your IP, and your ISP can't see your destination.
-- **Unblock Content**: Access geo-restricted or blocked websites by routing through nodes in other countries.
-- **No Trust Required**: Unlike VPNs, there is no central company that can sell your data. The network is run by people like you.
+### 💎 The Obsidian UI
+Experience a premium, high-impact interface designed for clarity and elite status.
+- **Glassmorphism**: Semi-transparent dashboards with neon status glows.
+- **Live Heartbeat**: Pulsatile VPN status indicators that reflect real-time protection.
+- **Multi-Hop Visualization**: Visual chain builder to trace your data from `App ➔ Tor ➔ WireGuard ➔ Internet`.
 
-### For Power Users
-- **SOCKS5 Interface**: Use VigilNet with *any* application that supports SOCKS proxies (`curl`, `ssh`, `git`, browsers, etc.) via `127.0.0.1:9050`.
-- **Run a Relay**: Contribute bandwidth to the network by running a relay node. Help freedom of information worldwide.
-- **Verification**: The code is 100% open source. You can audit the cryptography and build from source.
-- **Resilience**: The decentralized P2P architecture means the network cannot be taken down by shutting off a single server.
+### ⚡ Extreme Performance
+Optimized for the modern mobile processor.
+- **Zero-Copy Pipeline**: Utilizes `bytes::Bytes` and JNI batching to achieve near-zero CPU overhead for packet processing.
+- **Lockless Concurrency**: Routing decisions are made using `ArcSwap`, ensuring zero-contention even under heavy load.
+- **Adaptive Batching**: Process up to 32 packets per JNI bridge call, minimizing context switching.
 
-## Architecture
+## 🔒 Security Hardening
 
+- **Fail-Closed Strategy**: If source connectivity is lost, the tunnel remains active but sealed, ensuring no data leaks during network transitions.
+- **Split-Tunneling**: Granular exclusion of apps and domains from the privacy tunnel.
+- **DNS Leak Protection**: Intercepted DNS queries are resolved exclusively through the active privacy backend (TCP/Tor) to prevent ISP fingerprinting.
+- **Precision Chains**: Custom routing policies per-app (e.g., Banking via Clearnet, Messaging via Tor).
+
+---
+
+## 🏗️ Architecture (Rust + Kotlin)
+
+```mermaid
+graph TD
+    A[Android VpnService] -->|TUN FD| B[Rust FFI Bridge]
+    B -->|Batching| C[NetworkManager]
+    C -->|Policy| D{Routing Decision}
+    D -->|Single-Hop| E[Backend Proxies]
+    D -->|Multi-Hop| F[Onion Circuits]
+    E --> G[Tor/I2P/Nym/WG]
+    F --> G
+    G -->|Encrypted| H[Internet/Mesh]
 ```
-vigilnet/
-├── vigilnet-core/       # Node orchestration
-├── vigilnet-crypto/     # Onion encryption, keys
-├── vigilnet-routing/    # Circuit building
-├── vigilnet-discovery/  # DHT, mDNS, gossip
-├── vigilnet-transport/  # TCP, QUIC, BLE
-├── vigilnet-tun/        # VPN interface
-└── vigilnet-cli/        # Command-line interface
-```
 
-## Building
+## 🛠️ Developer Setup
+
+VigilNet is built with a modular Rust workspace and a Jetpack Compose Android frontend.
 
 ```bash
-# Install Rust (if not already)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# 1. Build the Rust core for Android (aarch64)
+./scripts/build_android.ps1
 
-# Build all crates
-cargo build --workspace
-
-# Run tests
-cargo test --workspace
-
-# Run CLI
-cargo run -p vigilnet-cli -- --help
+# 2. Open /android in Android Studio
+# 3. Deploy to device (requires aarch64 support)
 ```
 
-## Usage
+## 📂 Project Structure
 
-```bash
-# Start a node (Web UI at http://localhost:9051)
-vigilnet start
+- `crates/vigilnet-android`: JNI bindings and high-performance packet loop.
+- `crates/vigilnet-tor`: Optimized Arti integration.
+- `crates/vigilnet-wireguard`: Userspace BoringTun integration.
+- `android/app`: The "Obsidian" Jetpack Compose frontend.
 
-# Use SOCKS5 Proxy
-curl --proxy socks5://127.0.0.1:9050 https://check.torproject.org/api/ip
+---
 
-# Join a private circle
-vigilnet circle join <token>
-```
+## 📜 License & Ethics
 
-## Requirements
-
-- Rust 1.75+
-- Linux, Windows, or macOS
-- Administrator/root privileges (for TUN interface)
-
-## License
-
-GPL-3.0
+**VigilNet** is licensed under **GPL-3.0**. We believe in radical transparency and absolute privacy. 🕊️

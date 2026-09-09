@@ -421,7 +421,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_addr() {
-        let addr = TcpTransport::parse_addr("/ip4/127.0.0.1/tcp/8080").unwrap();
+        let addr = TcpTransport::parse_addr("/ip4/127.0.0.1/tcp/8080")
+            .expect("Test address should be valid");
         assert_eq!(addr.ip(), std::net::Ipv4Addr::new(127, 0, 0, 1));
         assert_eq!(addr.port(), 8080);
     }

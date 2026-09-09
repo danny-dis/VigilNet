@@ -1,0 +1,483 @@
+groups:
+  - name: vigilnet_alerts
+    interval: 30s
+    rules:
+      # ============================================================================
+      # CRITICAL ALERTS - P1
+      # ============================================================================
+
+      - alert: VigilNetServiceDown
+        expr: up{job="vigilnet-nodes"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+          team: platform
+        annotations:
+          summary: "VigilNet node {{ $labels.instance }} is down"
+          description: "VigilNet node has been down for more than 1 minute."
+          runbook_url: "https://wiki.vigilnet.io/runbooks/service-down"
+          dashboard: "https://grafana.vigilnet.io/d/vigilnet-overview"
+
+      - alert: VigilNetHighErrorRate
+        expr: |
+          (
+            sum(rate(vigilnet_errors_total[5m]))
+            /
+            sum(rate(vigilnet_api_requests_total[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          priority: P1
+          team: platform
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+          runbook_url: "https://wiki.vigilnet.io/runbooks/high-error-rate"
+
+      - alert: VigilNetNoPeersConnected
+        expr: sum(vigilnet_p2p_connected_peers_total) == 0
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          team: networking
+        annotations:
+          summary: "No P2P peers connected"
+          description: "Node has no connected peers for over 5 minutes. Network isolation suspected."
+          runbook_url: "https://wiki.vigilnet.io/runbooks/no-peers"
+
+      - alert: VigilNetHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(vigilnet_request_duration_seconds_bucket[5m])) by (le)
+          ) > 10
+        for: 2m
+        labels:
+          severity: critical
+          priority: P1
+          team: platform
+        annotations:
+          summary: "Critical latency detected"
+          description: "95th percentile latency is {{ $value }}s."
+          runbook_url: "https://wiki.vigilnet.io/runbooks/high-latency"
+
+      - alert: VigilNetOOMKilled
+        expr: |
+          kube_pod_container_status_last_terminated_reason{
+            reason="OOMKilled",
+            namespace="vigilnet"
+          } == 1
+        for: 0m
+        labels:
+          severity: critical
+          priority: P1
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} was OOMKilled"
+          description: "Container was killed due to out of memory."
+          runbook_url: "https://wiki.vigilnet.io/runbooks/oom-killed"
+
+      - alert: VigilNetDiskFull
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/"}
+            /
+            node_filesystem_size_bytes{mountpoint="/"}
+          ) < 0.1
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+          team: platform
+        annotations:
+          summary: "Disk space critically low on {{ $labels.instance }}"
+          description: "Less than 10% disk space remaining ({{ $value | humanizePercentage }})."
+          runbook_url: "https://wiki.vigilnet.io/runbooks/disk-full"
+
+      # ============================================================================
+      # WARNING ALERTS - P2
+      # ============================================================================
+
+      - alert: VigilNetModerateErrorRate
+        expr: |
+          (
+            sum(rate(vigilnet_errors_total[5m]))
+            /
+            sum(rate(vigilnet_api_requests_total[5m]))
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          team: platform
+        annotations:
+          summary: "Elevated error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+
+      - alert: VigilNetHighCPUUsage
+        expr: |
+          (
+            sum(rate(process_cpu_seconds_total{job="vigilnet-nodes"}[5m]))
+            /
+            count(process_cpu_seconds_total{job="vigilnet-nodes"})
+          ) > 0.7
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          team: platform
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | humanizePercentage }}."
+
+      - alert: VigilNetHighMemoryUsage
+        expr: |
+          (
+            process_resident_memory_bytes{job="vigilnet-nodes"}
+            /
+            container_spec_memory_limit_bytes{container="vigilnet-node"}
+          ) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          team: platform
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanizePercentage }}."
+
+      - alert: VigilNetFewPeersConnected
+        expr: |
+          sum(vigilnet_p2p_connected_peers_total) > 0
+          and
+          sum(vigilnet_p2p_connected_peers_total) < 3
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          team: networking
+        annotations:
+          summary: "Low peer connectivity"
+          description: "Only {{ $value }} peers connected. Expected minimum: 3."
+
+      - alert: VigilNetHighLatencyWarning
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(vigilnet_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          team: platform
+        annotations:
+          summary: "Elevated latency detected"
+          description: "95th percentile latency is {{ $value }}s."
+
+      - alert: VigilNetDiskWarning
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/"}
+            /
+            node_filesystem_size_bytes{mountpoint="/"}
+          ) < 0.2
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          team: platform
+        annotations:
+          summary: "Disk space warning on {{ $labels.instance }}"
+          description: "Less than 20% disk space remaining ({{ $value | humanizePercentage }})."
+
+      - alert: VigilNetPodRestarting
+        expr: |
+          rate(kube_pod_container_status_restarts_total{
+            namespace="vigilnet"
+          }[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} is restarting frequently"
+          description: "Container has restarted {{ $value }} times per minute."
+
+      # ============================================================================
+      # AGENT NETWORK ALERTS
+      # ============================================================================
+
+      - alert: VigilNetAgentMessageFailures
+        expr: |
+          (
+            sum(rate(vigilnet_agent_messages_failed_total[5m]))
+            /
+            sum(rate(vigilnet_agent_messages_sent_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          team: agents
+        annotations:
+          summary: "High agent message failure rate"
+          description: "{{ $value | humanizePercentage }} of agent messages are failing."
+
+      - alert: VigilNetAgentAuthFailures
+        expr: |
+          (
+            sum(rate(vigilnet_auth_failed_total[5m]))
+            /
+            sum(rate(vigilnet_auth_attempts_total[5m]))
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          team: security
+        annotations:
+          summary: "High authentication failure rate"
+          description: "{{ $value | humanizePercentage }} authentication attempts are failing. Possible attack."
+
+      - alert: VigilNetE2EEDegraded
+        expr: |
+          sum(rate(vigilnet_e2ee_handshake_failures_total[5m]))
+          /
+          sum(rate(vigilnet_e2ee_handshakes_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          team: security
+        annotations:
+          summary: "E2EE handshake failure rate elevated"
+          description: "{{ $value | humanizePercentage }} of E2EE handshakes are failing."
+
+      - alert: VigilNetNoActiveAgents
+        expr: sum(vigilnet_agent_active_total) == 0
+        for: 2m
+        labels:
+          severity: critical
+          priority: P1
+          team: agents
+        annotations:
+          summary: "No active agents in network"
+          description: "Agent network appears to be completely down."
+
+      # ============================================================================
+      # P2P NETWORK ALERTS
+      # ============================================================================
+
+      - alert: VigilNetCircuitBuildFailures
+        expr: |
+          (
+            sum(rate(vigilnet_tor_circuits_failed_total[10m]))
+            /
+            sum(rate(vigilnet_tor_circuits_built_total[10m]))
+          ) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          team: networking
+        annotations:
+          summary: "High Tor circuit build failure rate"
+          description: "{{ $value | humanizePercentage }} of circuit builds are failing."
+
+      - alert: VigilNetDHTDegraded
+        expr: |
+          (
+            sum(rate(vigilnet_dht_queries_failed_total[5m]))
+            /
+            sum(rate(vigilnet_dht_queries_total[5m]))
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          team: networking
+        annotations:
+          summary: "DHT query failure rate elevated"
+          description: "{{ $value | humanizePercentage }} of DHT queries are failing."
+
+      - alert: VigilNetHighBandwidth
+        expr: |
+          (
+            sum(rate(vigilnet_p2p_bytes_sent_total[5m]))
+            +
+            sum(rate(vigilnet_p2p_bytes_received_total[5m]))
+          ) > 1e9
+        for: 5m
+        labels:
+          severity: warning
+          priority: P3
+          team: networking
+        annotations:
+          summary: "High bandwidth utilization"
+          description: "Network throughput is {{ $value | humanize }}B/s."
+
+      # ============================================================================
+      # SECURITY ALERTS
+      # ============================================================================
+
+      - alert: VigilNetSuspiciousActivity
+        expr: |
+          sum(rate(vigilnet_security_events_total{severity=~"high|critical"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+          team: security
+        annotations:
+          summary: "Suspicious security activity detected"
+          description: "High-severity security events detected. Immediate review required."
+
+      - alert: VigilNetRateLimiting
+        expr: |
+          sum(rate(vigilnet_rate_limit_hits_total[5m])) > 100
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          team: security
+        annotations:
+          summary: "Rate limiting active"
+          description: "{{ $value }} requests per second being rate limited."
+
+      - alert: VigilNetFirewallBlocks
+        expr: |
+          sum(rate(vigilnet_firewall_blocked_total[5m])) > 50
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          team: security
+        annotations:
+          summary: "High firewall block rate"
+          description: "{{ $value }} connections blocked per second."
+
+      # ============================================================================
+      # INFRASTRUCTURE ALERTS
+      # ============================================================================
+
+      - alert: VigilNetCertificateExpiring
+        expr: |
+          (
+            probe_ssl_earliest_cert_expiry - time()
+          ) < 86400 * 7
+        for: 1h
+        labels:
+          severity: warning
+          priority: P2
+          team: platform
+        annotations:
+          summary: "TLS certificate expiring soon"
+          description: "Certificate expires in {{ $value | humanizeDuration }}."
+
+      - alert: VigilNetGoroutineLeak
+        expr: |
+          (
+            go_goroutines{job="vigilnet-nodes"}
+            /
+            go_goroutines{job="vigilnet-nodes"} offset 1h
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          team: platform
+        annotations:
+          summary: "Possible goroutine leak detected"
+          description: "Goroutine count has doubled in the last hour."
+
+      - alert: VigilNetNodeNotReady
+        expr: |
+          kube_node_status_condition{
+            condition="Ready",
+            status="false"
+          } == 1
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          team: platform
+        annotations:
+          summary: "Kubernetes node {{ $labels.node }} not ready"
+          description: "Node has been not ready for over 5 minutes."
+
+      # ============================================================================
+      # BUSINESS METRICS ALERTS
+      # ============================================================================
+
+      - alert: VigilNetLowAgentActivity
+        expr: |
+          sum(rate(vigilnet_agent_messages_sent_total[1h])) < 1
+        for: 30m
+        labels:
+          severity: warning
+          priority: P3
+          team: agents
+        annotations:
+          summary: "Low agent activity detected"
+          description: "Agent message rate has dropped significantly."
+
+      - alert: VigilNetCircleInactivity
+        expr: |
+          sum(rate(vigilnet_circle_messages_total[1h])) == 0
+        for: 1h
+        labels:
+          severity: info
+          priority: P4
+          team: agents
+        annotations:
+          summary: "No circle activity in last hour"
+          description: "No messages sent to any circles in the past hour."
+
+  # ============================================================================
+  # AGGREGATION RULES
+  # ============================================================================
+
+  - name: vigilnet_aggregations
+    interval: 30s
+    rules:
+      - record: vigilnet:api_requests_rate5m
+        expr: sum(rate(vigilnet_api_requests_total[5m]))
+
+      - record: vigilnet:error_rate5m
+        expr: |
+          sum(rate(vigilnet_errors_total[5m]))
+          /
+          sum(rate(vigilnet_api_requests_total[5m]))
+
+      - record: vigilnet:request_latency_p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(vigilnet_request_duration_seconds_bucket[5m])) by (le)
+          )
+
+      - record: vigilnet:request_latency_p99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(vigilnet_request_duration_seconds_bucket[5m])) by (le)
+          )
+
+      - record: vigilnet:agent_messages_rate5m
+        expr: sum(rate(vigilnet_agent_messages_sent_total[5m]))
+
+      - record: vigilnet:p2p_connection_rate5m
+        expr: sum(rate(vigilnet_p2p_connections_opened_total[5m]))
+
+      - record: vigilnet:bandwidth_in_rate5m
+        expr: sum(rate(vigilnet_p2p_bytes_received_total[5m]))
+
+      - record: vigilnet:bandwidth_out_rate5m
+        expr: sum(rate(vigilnet_p2p_bytes_sent_total[5m]))
+
+      - record: vigilnet:total_bandwidth_rate5m
+        expr: |
+          sum(rate(vigilnet_p2p_bytes_received_total[5m]))
+          +
+          sum(rate(vigilnet_p2p_bytes_sent_total[5m]))

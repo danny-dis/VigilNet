@@ -6,12 +6,17 @@ authors.workspace = true
 license.workspace = true
 description = "Core orchestration and node logic for VigilNet"
 
+[features]
+default = ["agent"]
+agent = ["vigilnet-agent-core"]
+
 [dependencies]
 vigilnet-crypto = { workspace = true }
 vigilnet-routing = { workspace = true }
 vigilnet-discovery = { workspace = true }
 vigilnet-transport = { workspace = true }
 vigilnet-tun = { workspace = true }
+vigilnet-agent-core = { workspace = true, optional = true }
 
 tokio.workspace = true
 libp2p.workspace = true
@@ -23,6 +28,11 @@ tracing.workspace = true
 toml.workspace = true
 directories.workspace = true
 rand.workspace = true
+
+# Metrics and Observability
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+prometheus.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

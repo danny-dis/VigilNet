@@ -6,27 +6,17 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-# Internal crates
 vigilnet-crypto = { path = "../vigilnet-crypto" }
 vigilnet-transport = { path = "../vigilnet-transport" }
+vigilnet-agent-transport = { path = "../vigilnet-agent-transport" }
 
-# Async runtime
 tokio = { workspace = true }
-
-# Serialization
+async-trait = { workspace = true }
+bytes = { workspace = true }
 serde = { workspace = true }
-
-# Logging
 tracing = { workspace = true }
-
-# Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-# I2P SAM protocol client (optional)
-# i2p = { version = "0.2", optional = true }
-
 [features]
 default = []
-# Enable when i2p-rs is available
-# sam = ["i2p"]

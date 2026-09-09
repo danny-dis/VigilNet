@@ -7,9 +7,13 @@ pub mod network_manager;
 pub mod vpn_service;
 pub mod battery;
 pub mod ffi;
+pub mod agents;
+pub mod e2ee;
+mod tun_stack;
 
 pub use network_manager::{NetworkBackend, NetworkManager, NetworkStatus};
-pub use vpn_service::VpnTunnel;
+pub use vpn_service::{VpnTunnel, TunPacket};
+pub use agents::{MobileAgentManager, MobileAgentConfig};
 
 /// Android platform error types
 #[derive(Debug, thiserror::Error)]

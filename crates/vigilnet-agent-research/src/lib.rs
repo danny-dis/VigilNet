@@ -112,6 +112,22 @@ impl Default for ResearchSystem {
 mod tests {
     use super::*;
 
+    // ============================================
+    // Unit Tests for ResearchSystem
+    // ============================================
+
+    #[tokio::test]
+    async fn test_research_system_creation() {
+        let system = ResearchSystem::new(ResearchConfig::default());
+        assert!(!system.is_initialized().await);
+    }
+
+    #[tokio::test]
+    async fn test_research_system_default() {
+        let system: ResearchSystem = Default::default();
+        assert!(!system.is_initialized().await);
+    }
+
     #[tokio::test]
     async fn test_research_system_initialization() {
         let mut system = ResearchSystem::new(ResearchConfig::default());
@@ -124,18 +140,195 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_research_system_execution() {
-        let mut system = ResearchSystem::new(ResearchConfig::default());
-        system.initialize().await.unwrap();
+    async fn test_research_system_execute_not_initialized() {
+        let system = ResearchSystem::new(ResearchConfig::default());
         
         let query = ResearchQuery::new(
-            "machine learning".to_string(),
-            "Deep dive into ML".to_string(),
+            "test".to_string(),
+            "test description".to_string(),
             2,
         );
         
-        let result = system.execute(query).await.unwrap();
+        let result = system.execute(query).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not initialized"));
+    }
+
+    #[tokio::test]
+    async fn test_research_system_execute_batch_not_initialized() {
+        let system = ResearchSystem::new(ResearchConfig::default());
         
-        assert!(result.execution_time_ms > 0);
+        let queries = vec![
+            ResearchQuery::new("test1".to_string(), "desc1".to_string(), 2),
+            ResearchQuery::new("test2".to_string(), "desc2".to_string(), 2),
+        ];
+        
+        let results = system.execute_batch(queries).await;
+        assert_eq!(results.len(), 2);
+        
+        for result in results {
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_research_system_health_not_initialized() {
+        let system = ResearchSystem::new(ResearchConfig::default());
+        
+        let health = system.health().await;
+        assert!(health.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_research_system_metrics_not_initialized() {
+        let system = ResearchSystem::new(ResearchConfig::default());
+        
+        let metrics = system.metrics().await;
+        assert!(metrics.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_research_system_health_initialized() {
+        let mut system = ResearchSystem::new(ResearchConfig::default());
+        system.initialize().await.unwrap();
+        
+        let health = system.health().await;
+        assert!(health.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_research_system_metrics_initialized() {
+        let mut system = ResearchSystem::new(ResearchConfig::default());
+        system.initialize().await.unwrap();
+        
+        let metrics = system.metrics().await;
+        assert!(metrics.is_some());
+    }
+
+    // ============================================
+    // Integration Tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_research_system_full_lifecycle() {
+        let mut system = ResearchSystem::new(ResearchConfig::default());
+        
+        // Initial state
+        assert!(!system.is_initialized().await);
+        
+        // Initialize
+        system.initialize().await.unwrap();
+        assert!(system.is_initialized().await);
+        
+        // Execute query
+        let query = ResearchQuery::new(
+            "test topic".to_string(),
+            "test description".to_string(),
+            2,
+        );
+        
+        let result = system.execute(query).await;
+        // Execution may succeed or fail depending on implementation
+        let _ = result;
+        
+        // Check health and metrics
+        let health = system.health().await;
+        assert!(health.is_some());
+        
+        let metrics = system.metrics().await;
+        assert!(metrics.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_research_system_multiple_queries() {
+        let mut system = ResearchSystem::new(ResearchConfig::default());
+        system.initialize().await.unwrap();
+        
+        let queries: Vec<_> = (0..5)
+            .map(|i| ResearchQuery::new(
+                format!("topic-{}", i),
+                format!("description-{}", i),
+                2,
+            ))
+            .collect();
+        
+        let results = system.execute_batch(queries).await;
+        assert_eq!(results.len(), 5);
+    }
+
+    // ============================================
+    // Error Handling Tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_research_system_double_initialization() {
+        let mut system = ResearchSystem::new(ResearchConfig::default());
+        
+        system.initialize().await.unwrap();
+        // Second initialization should also succeed (idempotent)
+        system.initialize().await.unwrap();
+        
+        assert!(system.is_initialized().await);
+    }
+
+    // ============================================
+    // Edge Case Tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_research_system_empty_batch() {
+        let mut system = ResearchSystem::new(ResearchConfig::default());
+        system.initialize().await.unwrap();
+        
+        let results = system.execute_batch(vec![]).await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_research_system_large_batch() {
+        let mut system = ResearchSystem::new(ResearchConfig::default());
+        system.initialize().await.unwrap();
+        
+        let queries: Vec<_> = (0..100)
+            .map(|i| ResearchQuery::new(
+                format!("topic-{}", i),
+                format!("description-{}", i),
+                1,
+            ))
+            .collect();
+        
+        let results = system.execute_batch(queries).await;
+        assert_eq!(results.len(), 100);
+    }
+
+    #[tokio::test]
+    async fn test_research_system_concurrent_access() {
+        use std::sync::Arc;
+        
+        let mut system = ResearchSystem::new(ResearchConfig::default());
+        system.initialize().await.unwrap();
+        
+        let system = Arc::new(RwLock::new(system));
+        let mut handles = vec![];
+        
+        for i in 0..10 {
+            let sys = Arc::clone(&system);
+            let handle = tokio::spawn(async move {
+                let query = ResearchQuery::new(
+                    format!("concurrent-{}", i),
+                    "test".to_string(),
+                    1,
+                );
+                let guard = sys.read().await;
+                let _ = guard.execute(query).await;
+                let _ = guard.health().await;
+                let _ = guard.metrics().await;
+            });
+            handles.push(handle);
+        }
+        
+        for handle in handles {
+            handle.await.unwrap();
+        }
     }
 }

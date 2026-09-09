@@ -1,0 +1,198 @@
+groups:
+  - name: vigilnet_alerts
+    interval: 30s
+    rules:
+      # High Error Rate Alert
+      - alert: VigilNetHighErrorRate
+        expr: |
+          (
+            sum(rate(vigilnet_errors_total[5m])) 
+            / 
+            sum(rate(vigilnet_requests_total[5m]))
+          ) * 100 > 1
+        for: 2m
+        labels:
+          severity: warning
+          service: vigilnet
+        annotations:
+          summary: "VigilNet high error rate detected"
+          description: "Error rate is {{ $value | humanize }}% for the last 5 minutes, exceeding 1% threshold"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/high-error-rate"
+
+      # Critical Error Rate Alert (>5%)
+      - alert: VigilNetCriticalErrorRate
+        expr: |
+          (
+            sum(rate(vigilnet_errors_total[5m])) 
+            / 
+            sum(rate(vigilnet_requests_total[5m]))
+          ) * 100 > 5
+        for: 1m
+        labels:
+          severity: critical
+          service: vigilnet
+        annotations:
+          summary: "VigilNet critical error rate detected"
+          description: "Error rate is {{ $value | humanize }}% for the last 5 minutes, exceeding 5% threshold"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/critical-error-rate"
+
+      # High Latency Alert (P99 > 100ms)
+      - alert: VigilNetHighLatency
+        expr: |
+          histogram_quantile(0.99, 
+            sum(rate(vigilnet_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+          service: vigilnet
+        annotations:
+          summary: "VigilNet P99 latency is high"
+          description: "P99 latency is {{ $value | humanizeDuration }} for the last 5 minutes, exceeding 100ms threshold"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/high-latency"
+
+      # Critical Latency Alert (P99 > 500ms)
+      - alert: VigilNetCriticalLatency
+        expr: |
+          histogram_quantile(0.99, 
+            sum(rate(vigilnet_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 2m
+        labels:
+          severity: critical
+          service: vigilnet
+        annotations:
+          summary: "VigilNet P99 latency is critically high"
+          description: "P99 latency is {{ $value | humanizeDuration }} for the last 5 minutes, exceeding 500ms threshold"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/critical-latency"
+
+      # No Active Agents Alert
+      - alert: VigilNetNoActiveAgents
+        expr: sum(vigilnet_agents_active) == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: vigilnet
+        annotations:
+          summary: "No active VigilNet agents"
+          description: "There are currently 0 active VigilNet agents in the network"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/no-active-agents"
+
+      # Low Agent Count Alert
+      - alert: VigilNetLowAgentCount
+        expr: sum(vigilnet_agents_active) < 3
+        for: 5m
+        labels:
+          severity: warning
+          service: vigilnet
+        annotations:
+          summary: "VigilNet agent count is low"
+          description: "Only {{ $value }} active agents detected, expected at least 3"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/low-agent-count"
+
+      # Tor Backend Down Alert
+      - alert: VigilNetTorBackendDown
+        expr: vigilnet_backend_status{backend="tor"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: vigilnet
+          backend: tor
+        annotations:
+          summary: "Tor backend is down"
+          description: "Tor backend {{ $labels.instance }} has been down for more than 2 minutes"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/tor-backend-down"
+
+      # I2P Backend Down Alert
+      - alert: VigilNetI2PBackendDown
+        expr: vigilnet_backend_status{backend="i2p"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: vigilnet
+          backend: i2p
+        annotations:
+          summary: "I2P backend is down"
+          description: "I2P backend {{ $labels.instance }} has been down for more than 2 minutes"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/i2p-backend-down"
+
+      # Generic Backend Down Alert
+      - alert: VigilNetBackendDown
+        expr: vigilnet_backend_status == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: vigilnet
+        annotations:
+          summary: "VigilNet backend is down"
+          description: "Backend {{ $labels.backend }} ({{ $labels.instance }}) has been down for more than 2 minutes"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/backend-down"
+
+      # High Connection Drop Rate Alert
+      - alert: VigilNetHighConnectionDropRate
+        expr: |
+          rate(vigilnet_disconnections_total[5m]) 
+          / 
+          rate(vigilnet_connections_total[5m]) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+          service: vigilnet
+        annotations:
+          summary: "VigilNet connection drop rate is high"
+          description: "Connection drop rate is {{ $value | humanizePercentage }} for the last 5 minutes"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/high-connection-drop-rate"
+
+      # Crypto Operation Failures Alert
+      - alert: VigilNetCryptoFailures
+        expr: rate(vigilnet_crypto_operations_failed_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          service: vigilnet
+        annotations:
+          summary: "VigilNet crypto operations failing"
+          description: "{{ $value | humanize }} crypto operation failures per second detected"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/crypto-failures"
+
+      # TUN Device Errors Alert
+      - alert: VigilNetTunDeviceErrors
+        expr: rate(vigilnet_tun_errors_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: vigilnet
+        annotations:
+          summary: "VigilNet TUN device errors detected"
+          description: "TUN device {{ $labels.device }} has {{ $value | humanize }} errors per second"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/tun-device-errors"
+
+      # Key Derivation Slow Alert
+      - alert: VigilNetSlowKeyDerivation
+        expr: |
+          histogram_quantile(0.99, 
+            sum(rate(vigilnet_crypto_key_derivation_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: vigilnet
+        annotations:
+          summary: "VigilNet key derivation is slow"
+          description: "P99 key derivation time is {{ $value | humanizeDuration }}, which may impact connection establishment"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/slow-key-derivation"
+
+      # No Traffic Alert (Possible partition)
+      - alert: VigilNetNoTraffic
+        expr: |
+          sum(rate(vigilnet_packets_received_total[5m])) == 0
+          and
+          sum(rate(vigilnet_packets_sent_total[5m])) == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: vigilnet
+        annotations:
+          summary: "VigilNet traffic has stopped"
+          description: "No packets received or sent in the last 5 minutes - possible network partition"
+          runbook_url: "https://wiki.internal/vigilnet/runbooks/no-traffic"

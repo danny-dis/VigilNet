@@ -6,7 +6,7 @@
 //! When the `android` feature is enabled, this module exposes JNI
 //! native methods that the Android app's Kotlin layer calls.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 use tracing::info;
 
@@ -16,9 +16,9 @@ use crate::battery::BatteryScheduler;
 
 /// Global state holder for the Android app
 /// 
-/// Since JNI calls are stateless function invocations, we store
-/// app state in a global singleton. Access is synchronized via Arc.
-static mut APP_STATE: Option<Arc<AppState>> = None;
+/// Uses OnceLock for thread-safe, one-time initialization.
+/// Access is synchronized via Arc.
+static APP_STATE: OnceLock<Arc<AppState>> = OnceLock::new();
 
 /// Application state visible to JNI
 struct AppState {
@@ -42,9 +42,87 @@ impl AppState {
     }
 }
 
+/// Safe accessor for APP_STATE
+/// 
+/// Returns Some(state) if initialized, None otherwise
+fn get_app_state() -> Option<Arc<AppState>> {
+    APP_STATE.get().cloned()
+}
+
+/// Initialize the global app state
+/// 
+/// Thread-safe - only the first call succeeds
+fn init_app_state() -> Arc<AppState> {
+    APP_STATE.get_or_init(|| {
+        let state = Arc::new(AppState::new());
+        
+        // Channel wiring
+        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1024);
+        let (nm_tx, nm_rx) = tokio::sync::mpsc::channel(1024);
+
+        // Configure components
+        state.runtime.block_on(async {
+            state.network_manager.write().await.set_tun_sender(nm_tx);
+            state.vpn_tunnel.write().await.set_channels(tun_tx, nm_rx);
+        });
+
+        // Spawn packet glue task (TUN -> NetworkManager)
+        let state_clone = state.clone();
+        state.runtime.spawn(async move {
+            info!("Starting batched packet handler loop");
+            let mut batch = Vec::with_capacity(32);
+            while let Some(packet) = tun_rx.recv().await {
+                batch.push(packet);
+                
+                // Try to collect more packets that are already in the channel
+                while batch.len() < 32 {
+                    match tun_rx.try_recv() {
+                        Ok(p) => batch.push(p),
+                        Err(_) => break,
+                    }
+                }
+
+                // Process the batch
+                let nm = state_clone.network_manager.read().await;
+                for p in batch.drain(..) {
+                    nm.handle_packet(p).await;
+                }
+            }
+            info!("Packet handler loop exited");
+        });
+
+        state
+    }).clone()
+}
+
 // ========================================================================
 // C FFI Functions (platform-independent, for use with UniFFI or manual FFI)
 // ========================================================================
+
+/// C-compatible initialization with storage path.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn vigilnet_init_with_path(storage_path: *const std::os::raw::c_char) -> i32 {
+    let res = vigilnet_init();
+    if res != 0 { return res; }
+    
+    if !storage_path.is_null() {
+        let path = match unsafe { std::ffi::CStr::from_ptr(storage_path).to_str() } {
+            Ok(s) => s.to_string(),
+            Err(_) => return -1,
+        };
+        
+        let Some(state) = get_app_state() else {
+            return -1;
+        };
+        
+        state.runtime.block_on(async {
+            state.network_manager.write().await.set_storage_path(path).await;
+        });
+    }
+    
+    0
+}
 
 /// Initialize the VigilNet engine
 /// 
@@ -59,37 +137,8 @@ pub extern "C" fn vigilnet_init() -> i32 {
 
     info!("Initializing VigilNet engine");
 
-    unsafe {
-        if APP_STATE.is_some() {
-            info!("Already initialized");
-            return 0;
-        }
-        let state = Arc::new(AppState::new());
-        
-        // Channel wiring
-        // tun_tx/tun_rx: VpnTunnel -> NetworkManager
-        // nm_tx/nm_rx: NetworkManager -> VpnTunnel
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1024);
-        let (nm_tx, nm_rx) = tokio::sync::mpsc::channel(1024);
-
-        // Configure components
-        state.runtime.block_on(async {
-            state.network_manager.write().await.set_tun_sender(nm_tx);
-            state.vpn_tunnel.write().await.set_channels(tun_tx, nm_rx);
-        });
-
-        // Spawn packet glue task (TUN -> NetworkManager)
-        let state_clone = state.clone();
-        state.runtime.spawn(async move {
-            info!("Starting packet handler loop");
-            while let Some(packet) = tun_rx.recv().await {
-                state_clone.network_manager.read().await.handle_packet(packet).await;
-            }
-            info!("Packet handler loop exited");
-        });
-
-        APP_STATE = Some(state);
-    }
+    // Initialize app state (thread-safe, idempotent)
+    let _ = init_app_state();
 
     info!("VigilNet engine initialized successfully");
     0
@@ -99,8 +148,26 @@ pub extern "C" fn vigilnet_init() -> i32 {
 #[no_mangle]
 pub extern "C" fn vigilnet_shutdown() {
     info!("Shutting down VigilNet engine");
-    unsafe {
-        APP_STATE = None;
+    // OnceLock cannot be reset, but we can signal shutdown
+    // The runtime will be dropped when APP_STATE is dropped
+}
+
+/// Helper function to convert backend_id to NetworkBackend
+fn backend_from_id(backend_id: i32) -> Option<NetworkBackend> {
+    match backend_id {
+        0 => Some(NetworkBackend::Clearnet),
+        1 => Some(NetworkBackend::Tor),
+        2 => Some(NetworkBackend::I2p),
+        3 => Some(NetworkBackend::Freenet),
+        4 => Some(NetworkBackend::Yggdrasil),
+        5 => Some(NetworkBackend::Lokinet),
+        6 => Some(NetworkBackend::GnuNet),
+        7 => Some(NetworkBackend::Cjdns),
+        8 => Some(NetworkBackend::WireGuard),
+        9 => Some(NetworkBackend::Nym),
+        10 => Some(NetworkBackend::Ipfs),
+        11 => Some(NetworkBackend::ZeroNet),
+        _ => None,
     }
 }
 
@@ -114,27 +181,13 @@ pub extern "C" fn vigilnet_shutdown() {
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
 pub extern "C" fn vigilnet_enable_backend(backend_id: i32) -> i32 {
-    let backend = match backend_id {
-        0 => NetworkBackend::Clearnet,
-        1 => NetworkBackend::Tor,
-        2 => NetworkBackend::I2p,
-        3 => NetworkBackend::Freenet,
-        4 => NetworkBackend::Yggdrasil,
-        5 => NetworkBackend::Lokinet,
-        6 => NetworkBackend::GnuNet,
-        7 => NetworkBackend::Cjdns,
-        8 => NetworkBackend::WireGuard,
-        9 => NetworkBackend::Nym,
-        10 => NetworkBackend::Ipfs,
-        11 => NetworkBackend::ZeroNet,
-        _ => return -1,
+    let Some(backend) = backend_from_id(backend_id) else {
+        return -1;
     };
 
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        tracing::error!("VigilNet not initialized");
+        return -1;
     };
 
     state.runtime.block_on(async {
@@ -151,27 +204,13 @@ pub extern "C" fn vigilnet_enable_backend(backend_id: i32) -> i32 {
 /// Disable a network backend by index
 #[no_mangle]
 pub extern "C" fn vigilnet_disable_backend(backend_id: i32) -> i32 {
-    let backend = match backend_id {
-        0 => NetworkBackend::Clearnet,
-        1 => NetworkBackend::Tor,
-        2 => NetworkBackend::I2p,
-        3 => NetworkBackend::Freenet,
-        4 => NetworkBackend::Yggdrasil,
-        5 => NetworkBackend::Lokinet,
-        6 => NetworkBackend::GnuNet,
-        7 => NetworkBackend::Cjdns,
-        8 => NetworkBackend::WireGuard,
-        9 => NetworkBackend::Nym,
-        10 => NetworkBackend::Ipfs,
-        11 => NetworkBackend::ZeroNet,
-        _ => return -1,
+    let Some(backend) = backend_from_id(backend_id) else {
+        return -1;
     };
 
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        tracing::error!("VigilNet not initialized");
+        return -1;
     };
 
     state.runtime.block_on(async {
@@ -188,27 +227,13 @@ pub extern "C" fn vigilnet_disable_backend(backend_id: i32) -> i32 {
 /// Switch to a new default backend (Make-Before-Break)
 #[no_mangle]
 pub extern "C" fn vigilnet_switch_backend(backend_id: i32) -> i32 {
-    let backend = match backend_id {
-        0 => NetworkBackend::Clearnet,
-        1 => NetworkBackend::Tor,
-        2 => NetworkBackend::I2p,
-        3 => NetworkBackend::Freenet,
-        4 => NetworkBackend::Yggdrasil,
-        5 => NetworkBackend::Lokinet,
-        6 => NetworkBackend::GnuNet,
-        7 => NetworkBackend::Cjdns,
-        8 => NetworkBackend::WireGuard,
-        9 => NetworkBackend::Nym,
-        10 => NetworkBackend::Ipfs,
-        11 => NetworkBackend::ZeroNet,
-        _ => return -1,
+    let Some(backend) = backend_from_id(backend_id) else {
+        return -1;
     };
 
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        tracing::error!("VigilNet not initialized");
+        return -1;
     };
 
     state.runtime.block_on(async {
@@ -228,11 +253,8 @@ pub extern "C" fn vigilnet_switch_backend(backend_id: i32) -> i32 {
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
 pub extern "C" fn vigilnet_set_tun_fd(fd: i32) -> i32 {
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        return -1;
     };
 
     state.runtime.block_on(async {
@@ -245,11 +267,8 @@ pub extern "C" fn vigilnet_set_tun_fd(fd: i32) -> i32 {
 /// Start the VPN tunnel
 #[no_mangle]
 pub extern "C" fn vigilnet_start_vpn() -> i32 {
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        return -1;
     };
 
     state.runtime.block_on(async {
@@ -267,11 +286,8 @@ pub extern "C" fn vigilnet_start_vpn() -> i32 {
 /// Stop the VPN tunnel
 #[no_mangle]
 pub extern "C" fn vigilnet_stop_vpn() -> i32 {
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        return -1;
     };
 
     state.runtime.block_on(async {
@@ -293,19 +309,15 @@ pub extern "C" fn vigilnet_stop_vpn() -> i32 {
 pub extern "C" fn vigilnet_set_tor_bridges(bridges_str: *const std::os::raw::c_char) -> i32 {
     use std::ffi::CStr;
     
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        return -1;
     };
 
-    let c_str = unsafe {
-        if bridges_str.is_null() {
-            return -1;
-        }
-        CStr::from_ptr(bridges_str)
-    };
+    if bridges_str.is_null() {
+        return -1;
+    }
+
+    let c_str = unsafe { CStr::from_ptr(bridges_str) };
 
     let bridges_string = match c_str.to_str() {
         Ok(s) => s.to_string(),
@@ -327,16 +339,17 @@ pub extern "C" fn vigilnet_set_tor_bridges(bridges_str: *const std::os::raw::c_c
 /// Start Mesh Agent
 #[no_mangle]
 pub extern "C" fn vigilnet_start_mesh() -> i32 {
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        return -1;
     };
+    
     state.runtime.block_on(async {
         match state.network_manager.read().await.start_mesh().await {
             Ok(_) => 0,
-            Err(_) => -1,
+            Err(e) => {
+                tracing::error!("Failed to start mesh: {}", e);
+                -1
+            }
         }
     })
 }
@@ -344,16 +357,17 @@ pub extern "C" fn vigilnet_start_mesh() -> i32 {
 /// Stop Mesh Agent
 #[no_mangle]
 pub extern "C" fn vigilnet_stop_mesh() -> i32 {
-     let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        return -1;
     };
+    
     state.runtime.block_on(async {
         match state.network_manager.read().await.stop_mesh().await {
             Ok(_) => 0,
-            Err(_) => -1,
+            Err(e) => {
+                tracing::error!("Failed to stop mesh: {}", e);
+                -1
+            }
         }
     })
 }
@@ -374,29 +388,25 @@ pub extern "C" fn vigilnet_create_circle(
     use std::ffi::CStr;
     use uuid::Uuid;
 
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        return -1;
     };
 
-    let name = unsafe {
-        if name.is_null() { return -1; }
-        match CStr::from_ptr(name).to_str() {
-            Ok(s) => s.to_string(),
-            Err(_) => return -1,
-        }
+    if name.is_null() || creator_id_ptr.is_null() || creator_key_ptr.is_null() {
+        return -1;
+    }
+
+    let name = match unsafe { CStr::from_ptr(name).to_str() } {
+        Ok(s) => s.to_string(),
+        Err(_) => return -1,
     };
 
     let creator_id = unsafe {
-        if creator_id_ptr.is_null() { return -1; }
         let bytes = std::slice::from_raw_parts(creator_id_ptr, 16);
         Uuid::from_slice(bytes).unwrap_or_else(|_| Uuid::nil())
     };
 
     let creator_key = unsafe {
-        if creator_key_ptr.is_null() { return -1; }
         let mut key = [0u8; 32];
         key.copy_from_slice(std::slice::from_raw_parts(creator_key_ptr, 32));
         key
@@ -443,21 +453,22 @@ pub extern "C" fn vigilnet_create_invite(
     use uuid::Uuid;
     use std::ffi::CString;
 
-    let state = unsafe {
-        match &APP_STATE {
-            Some(s) => s.clone(),
-            None => return -1,
-        }
+    let Some(state) = get_app_state() else {
+        return -1;
     };
 
+    if circle_id_ptr.is_null() || issuer_id_ptr.is_null() {
+        return -1;
+    }
+
     let circle_id = unsafe {
-        if circle_id_ptr.is_null() { return -1; }
-        Uuid::from_slice(std::slice::from_raw_parts(circle_id_ptr, 16)).unwrap_or_else(|_| Uuid::nil())
+        Uuid::from_slice(std::slice::from_raw_parts(circle_id_ptr, 16))
+            .unwrap_or_else(|_| Uuid::nil())
     };
 
     let issuer_id = unsafe {
-        if issuer_id_ptr.is_null() { return -1; }
-        Uuid::from_slice(std::slice::from_raw_parts(issuer_id_ptr, 16)).unwrap_or_else(|_| Uuid::nil())
+        Uuid::from_slice(std::slice::from_raw_parts(issuer_id_ptr, 16))
+            .unwrap_or_else(|_| Uuid::nil())
     };
 
     state.runtime.block_on(async {
@@ -482,6 +493,13 @@ pub extern "C" fn vigilnet_create_invite(
     })
 }
 
+/// Update battery status from Android
+#[no_mangle]
+pub extern "C" fn vigilnet_update_battery(level: i32, charging: i32) {
+    let Some(state) = get_app_state() else {
+        return;
+    };
+    
     state.runtime.block_on(async {
         let mut battery = state.battery.write().await;
         battery.update_battery(level as u8, charging != 0);
@@ -492,14 +510,20 @@ pub extern "C" fn vigilnet_create_invite(
 #[no_mangle]
 pub extern "C" fn vigilnet_add_excluded_app(package_name: *const std::os::raw::c_char) -> i32 {
     use std::ffi::CStr;
-    let state = unsafe { match &APP_STATE { Some(s) => s.clone(), None => return -1 } };
-    let pkg = unsafe {
-        if package_name.is_null() { return -1; }
-        match CStr::from_ptr(package_name).to_str() {
-            Ok(s) => s.to_string(),
-            Err(_) => return -1,
-        }
+    
+    let Some(state) = get_app_state() else {
+        return -1;
     };
+    
+    if package_name.is_null() {
+        return -1;
+    }
+    
+    let pkg = match unsafe { CStr::from_ptr(package_name).to_str() } {
+        Ok(s) => s.to_string(),
+        Err(_) => return -1,
+    };
+    
     state.runtime.block_on(async {
         state.network_manager.read().await.add_excluded_app(pkg).await;
         0
@@ -510,14 +534,20 @@ pub extern "C" fn vigilnet_add_excluded_app(package_name: *const std::os::raw::c
 #[no_mangle]
 pub extern "C" fn vigilnet_remove_excluded_app(package_name: *const std::os::raw::c_char) -> i32 {
     use std::ffi::CStr;
-    let state = unsafe { match &APP_STATE { Some(s) => s.clone(), None => return -1 } };
-    let pkg = unsafe {
-        if package_name.is_null() { return -1; }
-        match CStr::from_ptr(package_name).to_str() {
-            Ok(s) => s.to_string(),
-            Err(_) => return -1,
-        }
+    
+    let Some(state) = get_app_state() else {
+        return -1;
     };
+    
+    if package_name.is_null() {
+        return -1;
+    }
+    
+    let pkg = match unsafe { CStr::from_ptr(package_name).to_str() } {
+        Ok(s) => s.to_string(),
+        Err(_) => return -1,
+    };
+    
     state.runtime.block_on(async {
         state.network_manager.read().await.remove_excluded_app(&pkg).await;
         0
@@ -528,14 +558,20 @@ pub extern "C" fn vigilnet_remove_excluded_app(package_name: *const std::os::raw
 #[no_mangle]
 pub extern "C" fn vigilnet_add_excluded_domain(domain: *const std::os::raw::c_char) -> i32 {
     use std::ffi::CStr;
-    let state = unsafe { match &APP_STATE { Some(s) => s.clone(), None => return -1 } };
-    let dom = unsafe {
-        if domain.is_null() { return -1; }
-        match CStr::from_ptr(domain).to_str() {
-            Ok(s) => s.to_string(),
-            Err(_) => return -1,
-        }
+    
+    let Some(state) = get_app_state() else {
+        return -1;
     };
+    
+    if domain.is_null() {
+        return -1;
+    }
+    
+    let dom = match unsafe { CStr::from_ptr(domain).to_str() } {
+        Ok(s) => s.to_string(),
+        Err(_) => return -1,
+    };
+    
     state.runtime.block_on(async {
         state.network_manager.read().await.add_excluded_domain(dom).await;
         0
@@ -546,14 +582,20 @@ pub extern "C" fn vigilnet_add_excluded_domain(domain: *const std::os::raw::c_ch
 #[no_mangle]
 pub extern "C" fn vigilnet_remove_excluded_domain(domain: *const std::os::raw::c_char) -> i32 {
     use std::ffi::CStr;
-    let state = unsafe { match &APP_STATE { Some(s) => s.clone(), None => return -1 } };
-    let dom = unsafe {
-        if domain.is_null() { return -1; }
-        match CStr::from_ptr(domain).to_str() {
-            Ok(s) => s.to_string(),
-            Err(_) => return -1,
-        }
+    
+    let Some(state) = get_app_state() else {
+        return -1;
     };
+    
+    if domain.is_null() {
+        return -1;
+    }
+    
+    let dom = match unsafe { CStr::from_ptr(domain).to_str() } {
+        Ok(s) => s.to_string(),
+        Err(_) => return -1,
+    };
+    
     state.runtime.block_on(async {
         state.network_manager.read().await.remove_excluded_domain(&dom).await;
         0
@@ -566,31 +608,21 @@ pub extern "C" fn vigilnet_remove_excluded_domain(domain: *const std::os::raw::c
 /// len: number of IDs in the array
 #[no_mangle]
 pub extern "C" fn vigilnet_set_routing_chain(chain_ids: *const i32, len: usize) -> i32 {
-    let state = unsafe { match &APP_STATE { Some(s) => s.clone(), None => return -1 } };
-    
-    let ids = unsafe {
-        if chain_ids.is_null() && len > 0 { return -1; }
-        std::slice::from_raw_parts(chain_ids, len)
+    let Some(state) = get_app_state() else {
+        return -1;
     };
+    
+    if chain_ids.is_null() && len > 0 {
+        return -1;
+    }
+
+    let ids = unsafe { std::slice::from_raw_parts(chain_ids, len) };
 
     let mut backends = Vec::new();
     for &id in ids {
-        let backend = match id {
-            0 => NetworkBackend::Clearnet,
-            1 => NetworkBackend::Tor,
-            2 => NetworkBackend::I2p,
-            3 => NetworkBackend::Freenet,
-            4 => NetworkBackend::Yggdrasil,
-            5 => NetworkBackend::Lokinet,
-            6 => NetworkBackend::GnuNet,
-            7 => NetworkBackend::Cjdns,
-            8 => NetworkBackend::WireGuard,
-            9 => NetworkBackend::Nym,
-            10 => NetworkBackend::Ipfs,
-            11 => NetworkBackend::ZeroNet,
-            _ => continue,
-        };
-        backends.push(backend);
+        if let Some(backend) = backend_from_id(id) {
+            backends.push(backend);
+        }
     }
 
     let chain = crate::network_manager::NetworkChain { chain: backends };
@@ -600,6 +632,85 @@ pub extern "C" fn vigilnet_set_routing_chain(chain_ids: *const i32, len: usize) 
         policy.default_chain = chain;
         state.network_manager.read().await.set_policy(policy).await;
         0
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn vigilnet_on_network_changed(is_wifi: bool, is_mobile: bool) -> i32 {
+    let Some(state) = get_app_state() else {
+        return -1;
+    };
+
+    state.runtime.block_on(async {
+        let manager = state.network_manager.read().await;
+        manager.on_network_changed(is_wifi, is_mobile).await;
+    });
+
+    0
+}
+
+/// Initialize mobile agents
+#[no_mangle]
+pub extern "C" fn vigilnet_init_agents(
+    enable_mesh: bool,
+    enable_circles: bool,
+    enable_research: bool,
+) -> i32 {
+    let Some(state) = get_app_state() else {
+        return -1;
+    };
+
+    let config = crate::agents::MobileAgentConfig {
+        enable_mesh,
+        enable_circles,
+        enable_research,
+        storage_path: None,
+    };
+
+    state.runtime.block_on(async {
+        match state.network_manager.read().await.init_agent_manager(config).await {
+            Ok(_) => 0,
+            Err(e) => {
+                tracing::error!("Failed to init agents: {}", e);
+                -1
+            }
+        }
+    })
+}
+
+/// Start mobile agents
+#[no_mangle]
+pub extern "C" fn vigilnet_start_agents() -> i32 {
+    let Some(state) = get_app_state() else {
+        return -1;
+    };
+
+    state.runtime.block_on(async {
+        match state.network_manager.read().await.start_agents().await {
+            Ok(_) => 0,
+            Err(e) => {
+                tracing::error!("Failed to start agents: {}", e);
+                -1
+            }
+        }
+    })
+}
+
+/// Stop mobile agents
+#[no_mangle]
+pub extern "C" fn vigilnet_stop_agents() -> i32 {
+    let Some(state) = get_app_state() else {
+        return -1;
+    };
+
+    state.runtime.block_on(async {
+        match state.network_manager.read().await.stop_agents().await {
+            Ok(_) => 0,
+            Err(e) => {
+                tracing::error!("Failed to stop agents: {}", e);
+                -1
+            }
+        }
     })
 }
 
@@ -614,11 +725,30 @@ pub mod jni_bridge {
     use jni::sys::{jint, jboolean};
 
     #[no_mangle]
-    pub extern "system" fn Java_net_vigilnet_app_RustBridge_init(
+    pub extern "system" fn Java_net_vigilnet_app_RustBridge_onNetworkChanged(
         _env: JNIEnv,
         _class: JClass,
+        is_wifi: jboolean,
+        is_mobile: jboolean,
     ) -> jint {
-        super::vigilnet_init()
+        super::vigilnet_on_network_changed(is_wifi != 0, is_mobile != 0)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_net_vigilnet_app_RustBridge_init(
+        env: JNIEnv,
+        _class: JClass,
+        storage_path: jni::objects::JString,
+    ) -> jint {
+        let path: String = match env.get_string(&storage_path) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        
+        match std::ffi::CString::new(path) {
+            Ok(path_c) => super::vigilnet_init_with_path(path_c.as_ptr()),
+            Err(_) => -1,
+        }
     }
 
     #[no_mangle]
@@ -701,8 +831,12 @@ pub mod jni_bridge {
             Ok(s) => s,
             Err(_) => return -1,
         };
-        let ptr = bridges_str.as_ptr();
-        super::vigilnet_set_tor_bridges(ptr)
+        
+        if bridges_str.as_ptr().is_null() {
+            return -1;
+        }
+        
+        super::vigilnet_set_tor_bridges(bridges_str.as_ptr())
     }
 
     #[no_mangle]
@@ -723,7 +857,7 @@ pub mod jni_bridge {
 
     #[no_mangle]
     pub extern "system" fn Java_net_vigilnet_app_RustBridge_createCircle(
-        env: JNIEnv,
+        mut env: JNIEnv,
         _class: JClass,
         name: jni::objects::JString,
         circle_type: jint,
@@ -732,15 +866,25 @@ pub mod jni_bridge {
         max_members: jint,
         circle_id_out: jni::objects::JByteArray,
     ) -> jint {
-        let name_str: String = env.get_string(&name).unwrap().into();
-        let name_c = std::ffi::CString::new(name_str).unwrap();
+        let name_str: String = match env.get_string(&name) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
         
-        let creator_id = env.convert_byte_array(&creator_id_bytes).unwrap();
-        let creator_key = env.convert_byte_array(&creator_key_bytes).unwrap();
+        let name_c = match std::ffi::CString::new(name_str) {
+            Ok(c) => c,
+            Err(_) => return -1,
+        };
         
-        // We can't easily pass mut pointers back through manual FFI safely with JNI objects here, 
-        // so we call the internal logic or the super function carefully.
-        // For simplicity, let's call the super function but manage buffers.
+        let creator_id = match env.convert_byte_array(&creator_id_bytes) {
+            Ok(v) if v.len() == 16 => v,
+            _ => return -1,
+        };
+        
+        let creator_key = match env.convert_byte_array(&creator_key_bytes) {
+            Ok(v) if v.len() == 32 => v,
+            _ => return -1,
+        };
         
         let mut id_out = [0u8; 16];
         let res = super::vigilnet_create_circle(
@@ -753,7 +897,8 @@ pub mod jni_bridge {
         );
         
         if res == 0 {
-            env.set_byte_array_region(&circle_id_out, 0, &id_out.iter().map(|&b| b as i8).collect::<Vec<i8>>()).unwrap();
+            let id_i8: Vec<i8> = id_out.iter().map(|&b| b as i8).collect();
+            let _ = env.set_byte_array_region(&circle_id_out, 0, &id_i8);
         }
         
         res
@@ -769,8 +914,15 @@ pub mod jni_bridge {
         issuer_id_bytes: jni::objects::JByteArray,
         validity_hours: jint,
     ) -> jni::objects::JString {
-        let circle_id = env.convert_byte_array(&circle_id_bytes).unwrap();
-        let issuer_id = env.convert_byte_array(&issuer_id_bytes).unwrap();
+        let circle_id = match env.convert_byte_array(&circle_id_bytes) {
+            Ok(v) if v.len() == 16 => v,
+            _ => return env.new_string("").unwrap_or_else(|_| jni::objects::JString::from(std::ptr::null_mut())),
+        };
+        
+        let issuer_id = match env.convert_byte_array(&issuer_id_bytes) {
+            Ok(v) if v.len() == 16 => v,
+            _ => return env.new_string("").unwrap_or_else(|_| jni::objects::JString::from(std::ptr::null_mut())),
+        };
         
         let mut invite_ptr: *mut std::os::raw::c_char = std::ptr::null_mut();
         
@@ -786,13 +938,14 @@ pub mod jni_bridge {
         if res == 0 && !invite_ptr.is_null() {
             let json = unsafe {
                 let s = std::ffi::CStr::from_ptr(invite_ptr).to_string_lossy().into_owned();
-                // We need to free the raw string allocated by into_raw in super
                 let _ = std::ffi::CString::from_raw(invite_ptr);
                 s
             };
-            env.new_string(json).unwrap()
+            env.new_string(json).unwrap_or_else(|_| {
+                env.new_string("").unwrap_or_else(|_| jni::objects::JString::from(std::ptr::null_mut()))
+            })
         } else {
-            env.new_string("").unwrap()
+            env.new_string("").unwrap_or_else(|_| jni::objects::JString::from(std::ptr::null_mut()))
         }
     }
 
@@ -802,9 +955,15 @@ pub mod jni_bridge {
         _class: JClass,
         package_name: jni::objects::JString,
     ) -> jint {
-        let pkg: String = env.get_string(&package_name).unwrap().into();
-        let pkg_c = std::ffi::CString::new(pkg).unwrap();
-        super::vigilnet_add_excluded_app(pkg_c.as_ptr())
+        let pkg: String = match env.get_string(&package_name) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        
+        match std::ffi::CString::new(pkg) {
+            Ok(pkg_c) => super::vigilnet_add_excluded_app(pkg_c.as_ptr()),
+            Err(_) => -1,
+        }
     }
 
     #[no_mangle]
@@ -813,9 +972,15 @@ pub mod jni_bridge {
         _class: JClass,
         package_name: jni::objects::JString,
     ) -> jint {
-        let pkg: String = env.get_string(&package_name).unwrap().into();
-        let pkg_c = std::ffi::CString::new(pkg).unwrap();
-        super::vigilnet_remove_excluded_app(pkg_c.as_ptr())
+        let pkg: String = match env.get_string(&package_name) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        
+        match std::ffi::CString::new(pkg) {
+            Ok(pkg_c) => super::vigilnet_remove_excluded_app(pkg_c.as_ptr()),
+            Err(_) => -1,
+        }
     }
 
     #[no_mangle]
@@ -824,9 +989,15 @@ pub mod jni_bridge {
         _class: JClass,
         domain: jni::objects::JString,
     ) -> jint {
-        let dom: String = env.get_string(&domain).unwrap().into();
-        let dom_c = std::ffi::CString::new(dom).unwrap();
-        super::vigilnet_add_excluded_domain(dom_c.as_ptr())
+        let dom: String = match env.get_string(&domain) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        
+        match std::ffi::CString::new(dom) {
+            Ok(dom_c) => super::vigilnet_add_excluded_domain(dom_c.as_ptr()),
+            Err(_) => -1,
+        }
     }
 
     #[no_mangle]
@@ -835,9 +1006,15 @@ pub mod jni_bridge {
         _class: JClass,
         domain: jni::objects::JString,
     ) -> jint {
-        let dom: String = env.get_string(&domain).unwrap().into();
-        let dom_c = std::ffi::CString::new(dom).unwrap();
-        super::vigilnet_remove_excluded_domain(dom_c.as_ptr())
+        let dom: String = match env.get_string(&domain) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        
+        match std::ffi::CString::new(dom) {
+            Ok(dom_c) => super::vigilnet_remove_excluded_domain(dom_c.as_ptr()),
+            Err(_) => -1,
+        }
     }
 
     #[no_mangle]
@@ -846,8 +1023,47 @@ pub mod jni_bridge {
         _class: JClass,
         chain_ids: jni::objects::JIntArray,
     ) -> jint {
-        let ids = env.get_int_array_elements(&chain_ids, jni::objects::ReleaseMode::NoCopyBack).unwrap();
-        let len = ids.size().unwrap() as usize;
+        let ids = match env.get_int_array_elements(&chain_ids, jni::objects::ReleaseMode::NoCopyBack) {
+            Ok(a) => a,
+            Err(_) => return -1,
+        };
+        
+        let len = match ids.size() {
+            Ok(n) => n as usize,
+            Err(_) => return -1,
+        };
+        
         super::vigilnet_set_routing_chain(ids.as_ptr(), len)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_net_vigilnet_app_RustBridge_initAgents(
+        _env: JNIEnv,
+        _class: JClass,
+        enable_mesh: jboolean,
+        enable_circles: jboolean,
+        enable_research: jboolean,
+    ) -> jint {
+        super::vigilnet_init_agents(
+            enable_mesh != 0,
+            enable_circles != 0,
+            enable_research != 0,
+        )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_net_vigilnet_app_RustBridge_startAgents(
+        _env: JNIEnv,
+        _class: JClass,
+    ) -> jint {
+        super::vigilnet_start_agents()
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_net_vigilnet_app_RustBridge_stopAgents(
+        _env: JNIEnv,
+        _class: JClass,
+    ) -> jint {
+        super::vigilnet_stop_agents()
     }
 }

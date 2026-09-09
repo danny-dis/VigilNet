@@ -3,6 +3,8 @@
 //! Circuit building, path selection, and relay logic.
 //! Provides E2EE encryption for all circuit traffic using Signal Protocol.
 
+use tracing::{debug, error, info, instrument, trace, warn};
+
 pub mod circuit;
 pub mod path;
 pub mod relay;

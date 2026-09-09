@@ -2,19 +2,10 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{Device, DeviceCapabilities, Medium};
-use smoltcp::socket::tcp;
-use smoltcp::time::Instant;
-use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Address};
-
-use crate::vpn_service::TunPacket;
-
-
-use smoltcp::iface::{SocketHandle};
+use smoltcp::iface::{Config, Interface, SocketSet, SocketHandle};
 
 /// Trait for network backends that can act as a proxy for egress traffic
 #[async_trait::async_trait]
@@ -48,9 +39,9 @@ pub struct TunStack {
     iface: Interface,
     socket_set: SocketSet<'static>,
     egress: Arc<dyn BackendProxy>,
-    /// Map of (client_port) -> (dest_ip, dest_port)
-    /// Used to track where a connection was trying to go
-    connections: HashMap<u16, (std::net::Ipv4Addr, u16)>,
+    /// Map of socket handle -> proxy session
+    /// Used to track proxy connections for established sockets
+    connections: HashMap<SocketHandle, ProxySession>,
 }
 
 impl TunStack {
@@ -120,8 +111,8 @@ impl TunStack {
                                      info!("Socket established: -> {}:{}", dst_ip, dst_port);
                                      
                                      // Create channels
-                                     let (app_tx, mut app_rx) = mpsc::channel::<Vec<u8>>(1024);
-                                     let (tor_tx, mut tor_rx) = mpsc::channel::<Vec<u8>>(1024);
+                                     let (app_tx, mut app_rx) = mpsc::channel::<bytes::Bytes>(1024);
+                                     let (tor_tx, mut tor_rx) = mpsc::channel::<bytes::Bytes>(1024);
                                      
                                      self.connections.insert(handle, ProxySession {
                                          tx: app_tx,
@@ -186,14 +177,11 @@ impl TunStack {
                         if let Some(session) = self.connections.get_mut(&handle) {
                             // 1. Rx from App (smoltcp socket) -> Tx to Proxy Task
                             if s.can_recv() {
-                                let mut data = [0u8; 4096];
+                                let mut data = vec![0u8; 4096];
                                 match s.recv_slice(&mut data) {
                                     Ok(n) if n > 0 => {
-                                        // We use try_send to avoid blocking the poll loop
-                                        // If channel full, we drop (TCP congestion control should handle retransmit)
-                                        // Or better, we stop reading until channel has space.
-                                        let _ = session.tx.try_send(data[..n].to_vec()); 
-                                        // Ignore full error for MVP
+                                        data.truncate(n);
+                                        let _ = session.tx.try_send(bytes::Bytes::from(data)); 
                                     }
                                     _ => {}
                                 }
@@ -201,12 +189,11 @@ impl TunStack {
                             
                             // 2. Rx from Proxy Task -> Tx to App (smoltcp socket)
                             if s.can_send() {
-                                // check valid data to write
                                 match session.rx.try_recv() {
                                     Ok(data) => {
                                         s.send_slice(&data).ok();
                                     }
-                                    Err(_) => {} // Empty or closed
+                                    Err(_) => {}
                                 }
                             }
                         }
@@ -329,8 +316,16 @@ impl TunStack {
             if let Some(std::net::IpAddr::V4(ip)) = resolved_ip {
                 info!("Resolved {} -> {}", domain, ip);
                 let rdata = RData::A(u32::from_be_bytes(ip.octets()));
-                let record = ResourceRecord::new(Name::new(&domain).unwrap(), CLASS::IN, 300, rdata);
-                reply.answers.push(record);
+                match Name::new(&domain) {
+                    Ok(name) => {
+                        let record = ResourceRecord::new(name, CLASS::IN, 300, rdata);
+                        reply.answers.push(record);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to create DNS name for '{}': {}", domain, e);
+                        reply.header.response_code = simple_dns::rdata::RCODE::ServerFailure;
+                    }
+                }
             } else {
                 // If failed, we might want to return ServerFailure or just timeout
                 reply.header.response_code = simple_dns::rdata::RCODE::ServerFailure;
@@ -357,7 +352,8 @@ impl TunStack {
             }
 
             // Inject back to TUN
-            if let Err(e) = tx.send(TunPacket { data: final_packet }).await {
+            let data = bytes::Bytes::from(final_packet);
+            if let Err(e) = tx.send(TunPacket { data }).await {
                  error!("Failed to send DNS reply to TUN: {}", e);
             }
         });
@@ -365,17 +361,15 @@ impl TunStack {
 }
 
 struct ProxySession {
-    tx: mpsc::Sender<Vec<u8>>,
-    rx: mpsc::Receiver<Vec<u8>>,
+    tx: mpsc::Sender<bytes::Bytes>,
+    rx: mpsc::Receiver<bytes::Bytes>,
 }
-
-use smoltcp::iface::SocketHandle;
 
 // Re-implementing VirtualTunDevice correctly
 pub struct VirtualTunDevice {
     pub tx: mpsc::Sender<TunPacket>,
     pub mtu: usize,
-    pub rx_buffer: std::collections::VecDeque<Vec<u8>>,
+    pub rx_buffer: std::collections::VecDeque<bytes::Bytes>,
 }
 
 impl Device for VirtualTunDevice {
@@ -403,15 +397,16 @@ impl Device for VirtualTunDevice {
 }
 
 pub struct RxToken {
-    buffer: Vec<u8>,
+    buffer: bytes::Bytes,
 }
 
 impl smoltcp::phy::RxToken for RxToken {
-    fn consume<R, F>(mut self, f: F) -> R
+    fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        f(&mut self.buffer)
+        let mut buf = self.buffer.to_vec(); // still a copy unfortunately for RxToken consume
+        f(&mut buf)
     }
 }
 
@@ -431,7 +426,8 @@ impl smoltcp::phy::TxToken for TxToken {
         // Since consume is not async, we spawn a task or use try_send
         let tx = self.tx;
         tokio::spawn(async move {
-            if let Err(e) = tx.send(TunPacket { data: buffer }).await {
+            let data = bytes::Bytes::from(buffer);
+            if let Err(e) = tx.send(TunPacket { data }).await {
                 error!("Failed to send packet to TUN from stack: {}", e);
             }
         });

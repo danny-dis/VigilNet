@@ -93,7 +93,11 @@ impl CircleCipher {
             return Err(CircleCryptoError::DecryptionFailed("Ciphertext too short".into()));
         }
 
-        let epoch = u64::from_le_bytes(ciphertext[0..8].try_into().unwrap());
+        let epoch = u64::from_le_bytes(
+            ciphertext[0..8]
+                .try_into()
+                .map_err(|_| CircleCryptoError::DecryptionFailed("Invalid epoch bytes".into()))?,
+        );
         let nonce = &ciphertext[8..20];
         let encrypted = &ciphertext[20..];
 
@@ -197,8 +201,8 @@ mod tests {
         let cipher = CircleCipher::new(&group_key, 0);
 
         let plaintext = b"Hello, HIPAA-compliant world!";
-        let ciphertext = cipher.encrypt(plaintext).unwrap();
-        let decrypted = cipher.decrypt(&ciphertext).unwrap();
+        let ciphertext = cipher.encrypt(plaintext).expect("Encryption should succeed");
+        let decrypted = cipher.decrypt(&ciphertext).expect("Decryption should succeed");
 
         assert_eq!(plaintext.to_vec(), decrypted);
     }
@@ -208,13 +212,13 @@ mod tests {
         let mut cipher = CircleCipher::new(b"initial_group_key_12345678901", 0);
 
         let p1 = b"period 1";
-        let c1 = cipher.encrypt(p1).unwrap();
+        let c1 = cipher.encrypt(p1).expect("Encryption should succeed");
 
         let new_group_key = derive_group_key(&[b"new_key_material"]);
         cipher.rotate_epoch(&new_group_key);
 
         let p2 = b"period 2";
-        let c2 = cipher.encrypt(p2).unwrap();
+        let c2 = cipher.encrypt(p2).expect("Encryption should succeed");
 
         assert!(cipher.decrypt(&c2).is_ok());
         assert!(cipher.decrypt(&c1).is_ok());

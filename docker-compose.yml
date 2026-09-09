@@ -1,0 +1,254 @@
+# Docker Compose for VigilNet
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # VigilNet Core Node
+  # ============================================================================
+  vigilnet-node:
+    image: vigilnet/vigilnet:${VIGILNET_VERSION:-latest}
+    container_name: vigilnet-node
+    restart: unless-stopped
+    ports:
+      - "${VIGILNET_P2P_PORT:-4001}:4001/tcp"
+      - "${VIGILNET_P2P_PORT:-4001}:4001/udp"
+      - "${VIGILNET_API_PORT:-5001}:5001"
+    environment:
+      - VIGILNET_LOG_LEVEL=${VIGILNET_LOG_LEVEL:-info}
+      - VIGILNET_ENV=${VIGILNET_ENV:-production}
+      - VIGILNET_ENABLE_E2EE=${VIGILNET_ENABLE_E2EE:-true}
+      - VIGILNET_BOOTSTRAP_PEERS=${VIGILNET_BOOTSTRAP_PEERS:-}
+      - RUST_LOG=${VIGILNET_LOG_LEVEL:-info}
+    volumes:
+      - vigilnet-data:/var/lib/vigilnet
+      - vigilnet-config:/etc/vigilnet
+      - ./logs:/var/log/vigilnet
+    networks:
+      - vigilnet-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '${VIGILNET_MAX_CPU_CORES:-4}'
+          memory: ${VIGILNET_MAX_MEMORY_MB:-4096}M
+        reservations:
+          cpus: '1'
+          memory: 1024M
+    labels:
+      - "prometheus-job=vigilnet-node"
+      - "prometheus-port=8080"
+
+  # ============================================================================
+  # VigilNet Agent Service
+  # ============================================================================
+  vigilnet-agent:
+    image: vigilnet/vigilnet:${VIGILNET_VERSION:-latest}
+    container_name: vigilnet-agent
+    restart: unless-stopped
+    command: ["agent", "start", "--enable-e2ee"]
+    environment:
+      - VIGILNET_LOG_LEVEL=${VIGILNET_LOG_LEVEL:-info}
+      - VIGILNET_NODE_URL=http://vigilnet-node:5001
+      - VIGILNET_AGENT_NAME=${VIGILNET_AGENT_NAME:-default-agent}
+      - VIGILNET_AGENT_CAPABILITIES=${VIGILNET_AGENT_CAPABILITIES:-general}
+    volumes:
+      - vigilnet-agent-data:/var/lib/vigilnet-agent
+    networks:
+      - vigilnet-network
+    depends_on:
+      vigilnet-node:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2048M
+    labels:
+      - "prometheus-job=vigilnet-agent"
+      - "prometheus-port=8080"
+
+  # ============================================================================
+  # Prometheus Monitoring
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: vigilnet-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - vigilnet-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # Alertmanager
+  # ============================================================================
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: vigilnet-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - vigilnet-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # Grafana Dashboard
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: vigilnet-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - vigilnet-network
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # Node Exporter (System Metrics)
+  # ============================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: vigilnet-node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - vigilnet-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # cAdvisor (Container Metrics)
+  # ============================================================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: vigilnet-cadvisor
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    networks:
+      - vigilnet-network
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+
+  # ============================================================================
+  # Redis (Optional - for caching/session storage)
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: vigilnet-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - vigilnet-network
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+networks:
+  vigilnet-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  vigilnet-data:
+    driver: local
+  vigilnet-config:
+    driver: local
+  vigilnet-agent-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  alertmanager-data:
+    driver: local
+  grafana-data:
+    driver: local
+  redis-data:
+    driver: local

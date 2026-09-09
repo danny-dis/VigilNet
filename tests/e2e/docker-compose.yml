@@ -1,0 +1,222 @@
+version: '3.8'
+
+services:
+  # VigilNet bootstrap nodes
+  bootstrap-1:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.bootstrap
+    ports:
+      - "10001:10001"
+      - "10002:10002"
+    environment:
+      - VIGILNET_NODE_ID=bootstrap-1
+      - VIGILNET_BOOTSTRAP=true
+      - RUST_LOG=info
+    networks:
+      - vigilnet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:10001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      
+  bootstrap-2:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.bootstrap
+    ports:
+      - "10003:10001"
+      - "10004:10002"
+    environment:
+      - VIGILNET_NODE_ID=bootstrap-2
+      - VIGILNET_BOOTSTRAP=true
+      - BOOTSTRAP_PEERS=/dns4/bootstrap-1/tcp/10001
+      - RUST_LOG=info
+    networks:
+      - vigilnet
+    depends_on:
+      bootstrap-1:
+        condition: service_healthy
+        
+  bootstrap-3:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.bootstrap
+    ports:
+      - "10005:10001"
+      - "10006:10002"
+    environment:
+      - VIGILNET_NODE_ID=bootstrap-3
+      - VIGILNET_BOOTSTRAP=true
+      - BOOTSTRAP_PEERS=/dns4/bootstrap-1/tcp/10001
+      - RUST_LOG=info
+    networks:
+      - vigilnet
+    depends_on:
+      bootstrap-1:
+        condition: service_healthy
+
+  # Tor test network
+  tor-relay-1:
+    image: vigilnet/tor-test:latest
+    ports:
+      - "9050:9050"
+      - "9051:9051"
+      - "29001:29001"
+    environment:
+      - TOR_ORPORT=29001
+      - TOR_DIRPORT=29002
+      - TOR_RELAY_NICKNAME=vigilnet-test-1
+    networks:
+      - vigilnet
+    volumes:
+      - tor-data-1:/var/lib/tor
+      
+  tor-relay-2:
+    image: vigilnet/tor-test:latest
+    ports:
+      - "9052:9050"
+      - "9053:9051"
+      - "29003:29001"
+    environment:
+      - TOR_ORPORT=29001
+      - TOR_DIRPORT=29002
+      - TOR_RELAY_NICKNAME=vigilnet-test-2
+    networks:
+      - vigilnet
+    volumes:
+      - tor-data-2:/var/lib/tor
+      
+  tor-relay-3:
+    image: vigilnet/tor-test:latest
+    ports:
+      - "9054:9050"
+      - "9055:9051"
+      - "29005:29001"
+    environment:
+      - TOR_ORPORT=29001
+      - TOR_DIRPORT=29002
+      - TOR_RELAY_NICKNAME=vigilnet-test-3
+    networks:
+      - vigilnet
+    volumes:
+      - tor-data-3:/var/lib/tor
+
+  # I2P test router
+  i2p-router:
+    image: vigilnet/i2p-test:latest
+    ports:
+      - "7656:7656"
+      - "7657:7657"
+      - "7658:7658"
+      - "7659:7659"
+    environment:
+      - I2P_SAM_PORT=7656
+      - I2P_BOB_PORT=7657
+      - I2P_UPNP=false
+    networks:
+      - vigilnet
+    volumes:
+      - i2p-data:/var/lib/i2p
+
+  # WireGuard test peer
+  wireguard-peer:
+    image: vigilnet/wg-peer:latest
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0
+    ports:
+      - "51820:51820/udp"
+    environment:
+      - WG_PORT=51820
+      - WG_SUBNET=10.200.200.0/24
+    networks:
+      - vigilnet
+
+  # Test client nodes
+  client-node-1:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.client
+    environment:
+      - VIGILNET_NODE_ID=client-1
+      - BOOTSTRAP_PEERS=/dns4/bootstrap-1/tcp/10001
+      - TOR_PROXY=socks5://tor-relay-1:9050
+      - I2P_SAM=i2p-router:7656
+      - RUST_LOG=debug
+    networks:
+      - vigilnet
+    depends_on:
+      - bootstrap-1
+      - tor-relay-1
+      - i2p-router
+      
+  client-node-2:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.client
+    environment:
+      - VIGILNET_NODE_ID=client-2
+      - BOOTSTRAP_PEERS=/dns4/bootstrap-1/tcp/10001
+      - TOR_PROXY=socks5://tor-relay-2:9050
+      - I2P_SAM=i2p-router:7656
+      - RUST_LOG=debug
+    networks:
+      - vigilnet
+    depends_on:
+      - bootstrap-1
+      - tor-relay-2
+      - i2p-router
+
+  # Network simulator for chaos testing
+  network-simulator:
+    image: viglienschaos/network-simulator:latest
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - vigilnet
+    profiles:
+      - chaos
+
+  # Metrics and monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    networks:
+      - vigilnet
+    profiles:
+      - monitoring
+      
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - vigilnet
+    profiles:
+      - monitoring
+
+networks:
+  vigilnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  tor-data-1:
+  tor-data-2:
+  tor-data-3:
+  i2p-data:
+  prometheus-data:
+  grafana-data:

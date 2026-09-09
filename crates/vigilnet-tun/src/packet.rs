@@ -294,7 +294,8 @@ mod tests {
         data[2] = 0x00;
         data[3] = 0x28;
 
-        let packet = IpPacket::parse(&data).unwrap();
+        let packet = IpPacket::parse(&data)
+            .expect("Should parse valid IPv4 packet");
         assert_eq!(packet.version, IpVersion::V4);
         assert_eq!(packet.protocol, Protocol::Tcp);
         assert_eq!(packet.src_addr_str(), "192.168.1.1");
@@ -314,7 +315,8 @@ mod tests {
             0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
         ]);
 
-        let packet = IpPacket::parse(&data).unwrap();
+        let packet = IpPacket::parse(&data)
+            .expect("Should parse valid IPv6 packet");
         assert_eq!(packet.version, IpVersion::V6);
         assert_eq!(packet.protocol, Protocol::Tcp);
     }

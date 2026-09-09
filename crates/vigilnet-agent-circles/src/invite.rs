@@ -488,10 +488,14 @@ impl u256 {
 impl std::ops::Add for u256 {
     type Output = Self;
     fn add(self, other: Self) -> Self {
-        let a = u128::from_le_bytes(self.0[16..].try_into().unwrap()) 
-            | (u128::from_le_bytes(self.0[..16].try_into().unwrap()) << 128);
-        let b = u128::from_le_bytes(other.0[16..].try_into().unwrap())
-            | (u128::from_le_bytes(other.0[..16].try_into().unwrap()) << 128);
+        let a = u128::from_le_bytes(self.0[16..].try_into()
+            .expect("slice [16..] of [u8; 32] is always 16 bytes")) 
+            | (u128::from_le_bytes(self.0[..16].try_into()
+                .expect("slice [..16] of [u8; 32] is always 16 bytes")) << 128);
+        let b = u128::from_le_bytes(other.0[16..].try_into()
+            .expect("slice [16..] of [u8; 32] is always 16 bytes"))
+            | (u128::from_le_bytes(other.0[..16].try_into()
+                .expect("slice [..16] of [u8; 32] is always 16 bytes")) << 128);
         let sum = a.wrapping_add(b);
         let mut result = [0u8; 32];
         result[..16].copy_from_slice(&(sum as u128).to_le_bytes());
@@ -503,10 +507,14 @@ impl std::ops::Add for u256 {
 impl std::ops::Sub for u256 {
     type Output = Self;
     fn sub(self, other: Self) -> Self {
-        let a = u128::from_le_bytes(self.0[16..].try_into().unwrap())
-            | (u128::from_le_bytes(self.0[..16].try_into().unwrap()) << 128);
-        let b = u128::from_le_bytes(other.0[16..].try_into().unwrap())
-            | (u128::from_le_bytes(other.0[..16].try_into().unwrap()) << 128);
+        let a = u128::from_le_bytes(self.0[16..].try_into()
+            .expect("slice [16..] of [u8; 32] is always 16 bytes"))
+            | (u128::from_le_bytes(self.0[..16].try_into()
+                .expect("slice [..16] of [u8; 32] is always 16 bytes")) << 128);
+        let b = u128::from_le_bytes(other.0[16..].try_into()
+            .expect("slice [16..] of [u8; 32] is always 16 bytes"))
+            | (u128::from_le_bytes(other.0[..16].try_into()
+                .expect("slice [..16] of [u8; 32] is always 16 bytes")) << 128);
         let diff = a.wrapping_sub(b);
         let mut result = [0u8; 32];
         result[..16].copy_from_slice(&(diff as u128).to_le_bytes());
@@ -518,10 +526,14 @@ impl std::ops::Sub for u256 {
 impl std::ops::Mul for u256 {
     type Output = Self;
     fn mul(self, other: Self) -> Self {
-        let a_lo = u128::from_le_bytes(self.0[..16].try_into().unwrap());
-        let a_hi = u128::from_le_bytes(self.0[16..].try_into().unwrap());
-        let b_lo = u128::from_le_bytes(other.0[..16].try_into().unwrap());
-        let b_hi = u128::from_le_bytes(other.0[16..].try_into().unwrap());
+        let a_lo = u128::from_le_bytes(self.0[..16].try_into()
+            .expect("slice [..16] of [u8; 32] is always 16 bytes"));
+        let a_hi = u128::from_le_bytes(self.0[16..].try_into()
+            .expect("slice [16..] of [u8; 32] is always 16 bytes"));
+        let b_lo = u128::from_le_bytes(other.0[..16].try_into()
+            .expect("slice [..16] of [u8; 32] is always 16 bytes"));
+        let b_hi = u128::from_le_bytes(other.0[16..].try_into()
+            .expect("slice [16..] of [u8; 32] is always 16 bytes"));
 
         let (lo, hi) = split_mul(a_lo, a_hi, b_lo, b_hi);
         let mut result = [0u8; 32];
@@ -550,8 +562,10 @@ impl std::ops::Shr<u32> for u256 {
         let bit_shift = s % 128;
         
         if word_shift == 0 {
-            let lo = u128::from_le_bytes(self.0[16..].try_into().unwrap());
-            let hi = u128::from_le_bytes(self.0[..16].try_into().unwrap());
+            let lo = u128::from_le_bytes(self.0[16..].try_into()
+                .expect("slice [16..] of [u8; 32] is always 16 bytes"));
+            let hi = u128::from_le_bytes(self.0[..16].try_into()
+                .expect("slice [..16] of [u8; 32] is always 16 bytes"));
             let shifted = (hi << (128 - bit_shift)) | (lo >> bit_shift);
             result[..16].copy_from_slice(&shifted.to_le_bytes());
         }
@@ -571,8 +585,10 @@ impl std::ops::Shl<u32> for u256 {
         let bit_shift = s % 128;
         
         if word_shift == 0 {
-            let lo = u128::from_le_bytes(self.0[16..].try_into().unwrap());
-            let hi = u128::from_le_bytes(self.0[..16].try_into().unwrap());
+            let lo = u128::from_le_bytes(self.0[16..].try_into()
+                .expect("slice [16..] of [u8; 32] is always 16 bytes"));
+            let hi = u128::from_le_bytes(self.0[..16].try_into()
+                .expect("slice [..16] of [u8; 32] is always 16 bytes"));
             let shifted = (lo << bit_shift) | (hi >> (128 - bit_shift));
             result[16..].copy_from_slice(&shifted.to_le_bytes());
         }
@@ -619,10 +635,14 @@ mod tests {
         let sss = ShamirSecretSharing::new();
         let secret = b"my_super_secret_key_1234567890";
         
-        let shares = sss.split_secret(secret, 3, 5).unwrap();
+        let shares = sss
+            .split_secret(secret, 3, 5)
+            .expect("secret should split into shares");
         assert_eq!(shares.len(), 5);
 
-        let reconstructed = sss.reconstruct_secret(&shares[..3]).unwrap();
+        let reconstructed = sss
+            .reconstruct_secret(&shares[..3])
+            .expect("secret should be reconstructed from shares");
         assert_eq!(&reconstructed[..secret.len()], secret);
     }
 
@@ -631,8 +651,10 @@ mod tests {
         let vss = FeldmanVss::new();
         let secret = b"test_secret_for_verification";
         
-        let (commitments, _) = vss.create_commitments(secret, 3).unwrap();
-        
+        let (commitments, _) = vss
+            .create_commitments(secret, 3)
+            .expect("commitments should be created");
+
         let share = sss_share_for_test(secret, 1);
         let valid = vss.verify_share(1, &share, &commitments);
         assert!(valid);
@@ -640,7 +662,9 @@ mod tests {
 
     fn sss_share_for_test(secret: &[u8], x: u8) -> [u8; 32] {
         let sss = ShamirSecretSharing::new();
-        let shares = sss.split_secret(secret, 1, 1).unwrap();
+        let shares = sss
+            .split_secret(secret, 1, 1)
+            .expect("secret should split into shares");
         shares[0].share_value
     }
 
@@ -656,8 +680,9 @@ mod tests {
             Uuid::new_v4(),
             Some(5),
             chrono::Duration::hours(24),
-        ).unwrap();
-        
+        )
+        .expect("invite should be created");
+
         let active = manager.list_active_invites(circle_id);
         assert!(active.contains(&invite.invite_id));
     }

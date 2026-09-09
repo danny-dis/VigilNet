@@ -10,8 +10,15 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use parking_lot::RwLock;
 use lru::LruCache;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, instrument, trace, warn};
 use vigilnet_crypto::{decrypt, encrypt};
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 const DHT_NONCE_SIZE: usize = 12;
 const DHT_TAG_SIZE: usize = 16;
@@ -68,7 +75,9 @@ pub struct DhtDiscovery {
 }
 
 impl DhtDiscovery {
+    #[instrument(level = "info")]
     pub fn new(local_peer_id: PeerId) -> Self {
+        info!(local_peer_id = %local_peer_id, "Creating new DHT discovery");
         Self {
             local_peer_id,
             peers: HashSet::new(),
@@ -89,47 +98,67 @@ impl DhtDiscovery {
         }
     }
 
+    #[instrument(skip(self, peer_id_bytes, session_key), level = "debug")]
     pub fn with_identity(mut self, peer_id_bytes: [u8; 32], session_key: [u8; 32]) -> Self {
+        debug!("Setting DHT identity");
         self.local_identity = Some((peer_id_bytes, session_key));
         self
     }
 
+    #[instrument(skip(self, peers), level = "debug")]
     pub fn with_bootstrap_peers(mut self, peers: Vec<(PeerId, String)>) -> Self {
+        debug!(count = peers.len(), "Setting bootstrap peers");
         self.bootstrap_peers = peers.clone();
         self.bootstrap_nodes = peers.iter().map(|(id, _)| *id).collect();
         self
     }
 
+    #[instrument(skip(self, name), level = "debug")]
     pub fn with_protocol_name(mut self, name: String) -> Self {
+        debug!(protocol = %name, "Setting protocol name");
         self.protocol_name = name;
         self
     }
 
+    #[instrument(skip(self, limiter), level = "debug")]
     pub fn with_rate_limiter(mut self, limiter: RateLimiter) -> Self {
+        debug!("Setting rate limiter");
         self.rate_limiter = Arc::new(limiter);
         self
     }
 
+    #[instrument(skip(self, manager), level = "debug")]
     pub fn with_reputation_manager(mut self, manager: ReputationManager) -> Self {
+        debug!("Setting reputation manager");
         self.reputation_manager = Arc::new(manager);
         self
     }
 
+    #[instrument(skip(self, key), level = "debug")]
     pub fn set_session_key(&mut self, peer_id: PeerId, key: [u8; 32]) {
-        debug!("DHT: Setting session key for peer {}", peer_id);
+        debug!(peer_id = %peer_id, "Setting session key");
         self.session_keys.insert(peer_id, key);
     }
 
+    #[instrument(skip(self), level = "trace")]
     pub fn is_verified(&self, peer_id: &PeerId) -> bool {
-        self.verified_peers.contains(peer_id)
+        let verified = self.verified_peers.contains(peer_id);
+        trace!(peer_id = %peer_id, verified, "Checked verification status");
+        verified
     }
 
+    #[instrument(skip(self), level = "trace")]
     pub fn is_rate_limited(&self, peer_id: &PeerId) -> bool {
-        !self.rate_limiter.check_rate_limit(peer_id)
+        let limited = !self.rate_limiter.check_rate_limit(peer_id);
+        trace!(peer_id = %peer_id, rate_limited = limited, "Checked rate limit");
+        limited
     }
 
+    #[instrument(skip(self), level = "trace")]
     pub fn get_reputation(&self, peer_id: &PeerId) -> Option<f64> {
-        self.reputation_manager.get_score(peer_id)
+        let score = self.reputation_manager.get_score(peer_id);
+        trace!(peer_id = %peer_id, ?score, "Retrieved reputation score");
+        score
     }
 
     fn encrypt_peer_record(&self, record: &PeerRecord) -> Option<EncryptedPeerRecord> {
@@ -146,10 +175,7 @@ impl DhtDiscovery {
         let nonce = ciphertext[..DHT_NONCE_SIZE].try_into().ok()?;
         let ciphertext_only = ciphertext[DHT_NONCE_SIZE..].to_vec();
         
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let timestamp = current_timestamp();
         
         let signature = self.sign_data(&ciphertext_only, &nonce)?;
         
@@ -223,10 +249,7 @@ impl DhtDiscovery {
             peer_id: *sender_id,
             addresses,
             session_key,
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            timestamp: current_timestamp(),
             version: 1,
             proof_of_work: vec![],
         };
@@ -244,92 +267,116 @@ impl DhtDiscovery {
         })
     }
 
+    #[instrument(skip(self), level = "info")]
     pub fn add_peer(&mut self, peer_id: PeerId) {
         if self.rate_limiter.check_rate_limit(&peer_id) {
             self.peers.insert(peer_id);
             self.reputation_manager.record_successful_interaction(&peer_id);
-            info!("DHT: Added peer {}", peer_id);
+            info!(peer_id = %peer_id, total_peers = self.peers.len(), "Peer added");
         } else {
-            warn!("DHT: Peer {} is rate limited", peer_id);
+            warn!(peer_id = %peer_id, "Peer is rate limited, not adding");
         }
     }
 
+    #[instrument(skip(self), level = "info")]
     pub fn add_verified_peer(&mut self, peer_id: PeerId) {
         self.verified_peers.insert(peer_id);
         self.peers.insert(peer_id);
         self.reputation_manager.mark_verified(&peer_id);
-        info!("DHT: Added verified peer {}", peer_id);
+        info!(
+            peer_id = %peer_id,
+            total_peers = self.peers.len(),
+            verified_count = self.verified_peers.len(),
+            "Verified peer added"
+        );
     }
 
+    #[instrument(skip(self), level = "info")]
     pub fn remove_peer(&mut self, peer_id: &PeerId) {
+        info!(peer_id = %peer_id, "Removing peer");
         self.peers.remove(peer_id);
         self.verified_peers.remove(peer_id);
         self.session_keys.remove(peer_id);
         self.reputation_manager.record_failed_interaction(peer_id);
         self.rate_limiter.clear_peer(peer_id);
-        info!("DHT: Removed peer {}", peer_id);
+        info!(
+            peer_id = %peer_id,
+            remaining_peers = self.peers.len(),
+            "Peer removed"
+        );
     }
 
     pub fn get_session_key(&self, peer_id: &PeerId) -> Option<[u8; 32]> {
         self.session_keys.get(peer_id).copied()
     }
 
-    pub fn create_behaviour(&self) -> kad::Behaviour<MemoryStore> {
+    pub fn create_behaviour(&self) -> Result<kad::Behaviour<MemoryStore>, DiscoveryError> {
         let store = MemoryStore::new(self.local_peer_id);
         let mut config = kad::Config::default();
-        config.set_protocol_names(vec![
-            libp2p::StreamProtocol::try_from_owned(self.protocol_name.clone())
-                .expect("valid protocol name")
-        ]);
+        let protocol = libp2p::StreamProtocol::try_from_owned(self.protocol_name.clone())
+            .map_err(|e| DiscoveryError::DhtError(format!("Invalid protocol name: {}", e)))?;
+        config.set_protocol_names(vec![protocol]);
         config.set_replication_factor(5);
         config.set_record_ttl(Duration::from_secs(RECORD_TTL_SECS));
         
-        kad::Behaviour::with_config(self.local_peer_id, store, config)
+        Ok(kad::Behaviour::with_config(self.local_peer_id, store, config))
     }
 
+    #[instrument(skip(self, record), level = "debug")]
     pub fn handle_record(&mut self, record: &Record) -> Option<PeerId> {
+        trace!("Caching record");
         let cached = CachedRecord {
             record: record.clone(),
             cached_at: Instant::now(),
             access_count: 1,
         };
-        
+
         {
             let mut cache = self.record_cache.write();
             cache.put(record.key.clone(), cached);
         }
-        
+
+        // Try to parse as encrypted record
         if let Ok(encrypted) = serde_json::from_slice::<EncryptedPeerRecord>(&record.value) {
+            trace!("Parsed encrypted record");
+
             if !self.verify_signature(&encrypted.ciphertext, &encrypted.nonce, &encrypted.signature) {
-                warn!("DHT: Invalid signature in record");
+                warn!("Invalid signature in record, rejecting");
                 return None;
             }
-            
+            trace!("Signature verified");
+
             if let Some(peer_record) = self.decrypt_peer_record(&encrypted) {
                 let peer_id = PeerId::from_bytes(&peer_record.peer_id).ok()?;
-                
+
                 if !self.proof_of_work.verify(&peer_id) {
-                    warn!("DHT: Peer {} has insufficient PoW", peer_id);
+                    warn!(peer_id = %peer_id, "Peer has insufficient PoW, rejecting");
                     return None;
                 }
-                
+                trace!(peer_id = %peer_id, "Proof of work verified");
+
                 self.session_keys.insert(peer_id, peer_record.session_key);
                 self.add_verified_peer(peer_id);
-                
-                info!("DHT: Received verified record from {}", peer_id);
+
+                info!(peer_id = %peer_id, "Verified record processed successfully");
                 return Some(peer_id);
+            } else {
+                warn!("Failed to decrypt peer record");
             }
         }
-        
+
+        // Try to parse as plain record
         if let Ok(plain_record) = serde_json::from_slice::<PeerRecord>(&record.value) {
+            trace!("Parsed plain record");
             let peer_id = PeerId::from_bytes(&plain_record.peer_id).ok()?;
             self.session_keys.insert(peer_id, plain_record.session_key);
             self.add_peer(peer_id);
-            
-            debug!("DHT: Received plain record from {}", peer_id);
+
+            debug!(peer_id = %peer_id, "Plain record processed");
             return Some(peer_id);
         }
-        
+
+        trace!("Could not parse record");
         None
     }
 
@@ -375,25 +422,49 @@ impl DhtDiscovery {
 }
 
 impl Discovery for DhtDiscovery {
+    #[instrument(skip(self), level = "trace")]
     fn known_peers(&self) -> HashSet<PeerId> {
-        self.peers.clone()
+        let peers = self.peers.clone();
+        trace!(count = peers.len(), "Retrieved known peers");
+        peers
     }
 
+    #[instrument(skip(self), level = "info")]
     fn start(&mut self) -> Result<(), DiscoveryError> {
-        info!("Starting DHT discovery with E2EE, {} bootstrap peers", self.bootstrap_peers.len());
-        
-        for (peer_id, addr) in &self.bootstrap_peers {
-            debug!("Bootstrap peer: {} at {}", peer_id, addr);
+        info!(
+            bootstrap_peers = self.bootstrap_peers.len(),
+            "Starting DHT discovery"
+        );
+
+        for (i, (peer_id, addr)) in self.bootstrap_peers.iter().enumerate() {
+            debug!(
+                index = i,
+                peer_id = %peer_id,
+                address = %addr,
+                "Bootstrap peer configured"
+            );
         }
-        
+
+        info!("DHT discovery started");
         Ok(())
     }
 
+    #[instrument(skip(self), level = "info")]
     fn stop(&mut self) -> Result<(), DiscoveryError> {
         info!("Stopping DHT discovery");
+
+        let session_keys_count = self.session_keys.len();
+        let verified_count = self.verified_peers.len();
+
         self.session_keys.clear();
         self.verified_peers.clear();
         self.record_cache.write().clear();
+
+        info!(
+            cleared_session_keys = session_keys_count,
+            cleared_verified = verified_count,
+            "DHT discovery stopped"
+        );
         Ok(())
     }
 }

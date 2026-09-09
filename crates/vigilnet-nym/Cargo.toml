@@ -6,27 +6,19 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-# Internal crates
 vigilnet-crypto = { path = "../vigilnet-crypto" }
 vigilnet-transport = { path = "../vigilnet-transport" }
+vigilnet-agent-transport = { path = "../vigilnet-agent-transport" }
 
-# Async runtime
 tokio = { workspace = true }
-
-# Serialization
+async-trait = { workspace = true }
+bytes = { workspace = true }
 serde = { workspace = true }
-
-# Logging
 tracing = { workspace = true }
-
-# Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-# Nym SDK
 nym-sdk = { version = "0.1", default-features = false }
 
 [features]
 default = []
-# Enable when nym-sdk is available
-nym = ["nym-sdk"]

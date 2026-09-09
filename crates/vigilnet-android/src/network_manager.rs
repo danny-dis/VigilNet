@@ -6,8 +6,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{info, warn, error};
+use tokio::sync::{RwLock, mpsc};
+use tracing::{info, warn, error, trace};
+
+use crate::vpn_service::TunPacket;
+use crate::agents::MobileAgentManager;
+use crate::tun_stack::{TunStack, BackendProxy, BackendStream};
 
 /// Available network backends
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -154,6 +158,27 @@ pub struct RoutingPolicy {
     pub excluded_apps: Vec<String>,
 }
 
+/// Global configuration for VigilNet engine persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VigilNetConfig {
+    /// Routing policy (Split Tunneling, Multi-Hop)
+    pub routing_policy: RoutingPolicy,
+    /// Configured Tor bridges
+    pub tor_bridges: Vec<String>,
+    /// Selected active backends
+    pub enabled_backends: Vec<NetworkBackend>,
+}
+
+impl Default for VigilNetConfig {
+    fn default() -> Self {
+        Self {
+            routing_policy: RoutingPolicy::default(),
+            tor_bridges: Vec::new(),
+            enabled_backends: vec![NetworkBackend::Clearnet],
+        }
+    }
+}
+
 impl Default for RoutingPolicy {
     fn default() -> Self {
         Self {
@@ -167,11 +192,6 @@ impl Default for RoutingPolicy {
     }
 }
 
-use crate::vpn_service::TunPacket;
-use tokio::sync::mpsc;
-
-// ... (existing imports)
-
 /// Multi-network manager
 /// 
 /// Coordinates multiple network backends, handles routing decisions,
@@ -180,7 +200,7 @@ pub struct NetworkManager {
     /// Status of each backend
     statuses: Arc<RwLock<HashMap<NetworkBackend, NetworkStatus>>>,
     /// Routing policy
-    policy: Arc<RwLock<RoutingPolicy>>,
+    policy: Arc<arc_swap::ArcSwap<RoutingPolicy>>,
     /// VigilNet core node
     node: Option<Arc<vigilnet_core::Node>>,
     /// Channel to send packets to TUN interface
@@ -199,6 +219,10 @@ pub struct NetworkManager {
     nym_client: Arc<RwLock<vigilnet_nym::client::NymClient>>,
     /// Freenet Node
     freenet_node: Arc<RwLock<vigilnet_freenet::node::FreenetNode>>,
+    /// Base path for storage
+    storage_path: Option<std::path::PathBuf>,
+    /// Mobile Agent Manager
+    agent_manager: Arc<RwLock<Option<MobileAgentManager>>>,
 }
 
 impl NetworkManager {
@@ -226,22 +250,17 @@ impl NetworkManager {
 
         // Initialize Mesh Agent
         let mesh_config = vigilnet_agent_mesh::MeshFallbackConfig::default();
-        // handling potential error in new() by unwrapping for now as we are in new() 
-        // effectively panicking if mesh init fails (which is bad but new() signature doesn't return Result)
-        // TODO: Change NetworkManager::new to return Result
         let mesh_fallback = match vigilnet_agent_mesh::MeshFallback::new(mesh_config) {
             Ok(m) => m,
             Err(e) => {
                 error!("Failed to initialize Mesh Agent: {}", e);
-                // Return a dummy/failed state or panic? 
-                // For MVP let's panic to see the issue early
                 panic!("Mesh Agent Init Failed: {}", e);
             }
         };
 
         Self {
             statuses: Arc::new(RwLock::new(statuses)),
-            policy: Arc::new(RwLock::new(RoutingPolicy::default())),
+            policy: Arc::new(arc_swap::ArcSwap::from_pointee(RoutingPolicy::default())),
             node: None,
             packet_to_tun: None,
             tor_client: Arc::new(RwLock::new(vigilnet_tor::TorClient::new())),
@@ -251,7 +270,84 @@ impl NetworkManager {
             i2p_client: Arc::new(RwLock::new(vigilnet_i2p::sam::SamClient::default_bridge())),
             nym_client: Arc::new(RwLock::new(vigilnet_nym::client::NymClient::new())),
             freenet_node: Arc::new(RwLock::new(vigilnet_freenet::node::FreenetNode::new("/data/user/0/net.vigilnet.app/files/freenet"))),
+            storage_path: None,
+            agent_manager: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Set the storage path and load existing config if any
+    pub async fn set_storage_path(&mut self, path: String) {
+        let p = std::path::PathBuf::from(path);
+        if let Err(e) = tokio::fs::create_dir_all(&p).await {
+            error!("Failed to create storage directory: {}", e);
+        }
+        self.storage_path = Some(p);
+        info!("Storage path set to: {:?}", self.storage_path);
+
+        if let Err(e) = self.load_config().await {
+            warn!("Could not load configuration from disk: {}", e);
+        }
+    }
+
+    /// Save current configuration to disk
+    pub async fn save_config(&self) -> crate::Result<()> {
+        let storage_path = match &self.storage_path {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let config_file = storage_path.join("vigilnet_config.json");
+        
+        let policy = self.policy.load();
+        let statuses = self.statuses.read().await;
+        
+        let mut enabled_backends = Vec::new();
+        for (backend, status) in statuses.iter() {
+            if status.enabled {
+                enabled_backends.push(*backend);
+            }
+        }
+
+        let config = VigilNetConfig {
+            routing_policy: policy.clone(),
+            tor_bridges: Vec::new(), // Placeholder, extract if needed
+            enabled_backends,
+        };
+
+        let json = serde_json::to_string_pretty(&config)?;
+        tokio::fs::write(config_file, json).await?;
+        info!("Configuration saved to disk");
+        Ok(())
+    }
+
+    /// Load configuration from disk
+    pub async fn load_config(&self) -> crate::Result<()> {
+        let storage_path = match &self.storage_path {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let config_file = storage_path.join("vigilnet_config.json");
+        if !config_file.exists() {
+            return Ok(());
+        }
+
+        let json = tokio::fs::read_to_string(config_file).await?;
+        let config: VigilNetConfig = serde_json::from_str(&json)?;
+        
+        // Restore policy
+        self.policy.store(Arc::new(config.routing_policy));
+        
+        // Restore enabled status
+        let mut statuses = self.statuses.write().await;
+        for backend in config.enabled_backends {
+            if let Some(status) = statuses.get_mut(&backend) {
+                status.enabled = true;
+            }
+        }
+        
+        info!("Configuration restored from disk");
+        Ok(())
     }
 
     /// Set the channel to send packets back to the TUN interface
@@ -295,7 +391,7 @@ impl NetworkManager {
     }
 
     async fn route_multi_hop(&self, packet: TunPacket, chain: NetworkChain) {
-        info!("Routing packet through chain: {:?}", chain.chain);
+        trace!("Routing packet through chain: {:?}", chain.chain);
         // Multi-hop routing algorithm (Layered Encapsulation):
         // app_packet -> [Tor (Onion)] -> [WireGuard (VPN)] -> NIC
         // The first backend in the chain is usually the 'outermost' (the one the packet hits first from the TUN).
@@ -305,7 +401,7 @@ impl NetworkManager {
         
         // Simple implementation for Tor over VPN:
         if chain.chain.len() == 2 && chain.chain[0] == NetworkBackend::Tor && chain.chain[1] == NetworkBackend::WireGuard {
-            info!("Multi-hop: Routing Tor over WireGuard");
+            trace!("Multi-hop: Routing Tor over WireGuard");
             // 1. Packet goes into TunStack (Tor entry)
             // 2. TunStack establishes Tor circuits
             // 3. TunStack's socket needs to be bound to the WireGuard tunnel's virtual interface
@@ -451,17 +547,35 @@ impl NetworkManager {
 
     /// Set the routing policy
     pub async fn set_policy(&self, policy: RoutingPolicy) {
-        *self.policy.write().await = policy;
+        self.policy.store(Arc::new(policy));
+        let _ = self.save_config().await;
     }
 
     /// Get the current routing policy
     pub async fn get_policy(&self) -> RoutingPolicy {
-        self.policy.read().await.clone()
+        (**self.policy.load()).clone()
+    }
+
+    /// Handle network connectivity changes (e.g. Wi-Fi to Mobile)
+    pub async fn on_network_changed(&self, is_wifi: bool, is_mobile: bool) {
+        info!("Network changed: WIFI={}, MOBILE={}", is_wifi, is_mobile);
+        
+        // Connectivity adaptation logic:
+        // 1. If currently on Tor, check if circuits need re-bootstrap or if bridges need to change?
+        // 2. If on WireGuard, the tunnel should handle endpoint roaming automatically, 
+        //    but we might want to log or trigger a handshake.
+        
+        // For now, we mainly log it. In future phases, we will add backend-specific re-binds.
+        if !is_wifi && !is_mobile {
+            warn!("Connectivity lost! Keeping VPN tunnel up (Fail-Closed).");
+        } else {
+            info!("Connectivity restored/changed. Adapting backends...");
+        }
     }
 
     /// Determine which backend(s) to use for a given app/domain
     pub async fn resolve_routing(&self, package_name: Option<&str>, domain: Option<&str>) -> (NetworkBackend, NetworkChain) {
-        let policy = self.policy.read().await;
+        let policy = self.policy.load();
 
         // Check if domain is excluded
         if let Some(domain) = domain {
@@ -496,41 +610,69 @@ impl NetworkManager {
 
     /// Add an app to the excluded list (split tunneling)
     pub async fn add_excluded_app(&self, package_name: String) {
-        let mut policy = self.policy.write().await;
-        if !policy.excluded_apps.contains(&package_name) {
-            policy.excluded_apps.push(package_name);
-            info!("App added to split-tunnel exclusions");
+        info!("Excluding app from tunnel: {}", package_name);
+        {
+            let current = self.policy.load();
+            if !current.excluded_apps.contains(&package_name) {
+                let mut new_policy = (**current).clone();
+                new_policy.excluded_apps.push(package_name);
+                self.policy.store(Arc::new(new_policy));
+                info!("App added to split-tunnel exclusions");
+            }
         }
+        let _ = self.save_config().await;
     }
 
     /// Remove an app from the excluded list
     pub async fn remove_excluded_app(&self, package_name: &str) {
-        let mut policy = self.policy.write().await;
-        policy.excluded_apps.retain(|a| a != package_name);
-        info!("App removed from split-tunnel exclusions");
+        {
+            let current = self.policy.load();
+            if current.excluded_apps.iter().any(|a| a == package_name) {
+                let mut new_policy = (**current).clone();
+                new_policy.excluded_apps.retain(|a| a != package_name);
+                self.policy.store(Arc::new(new_policy));
+                info!("App removed from split-tunnel exclusions");
+            }
+        }
+        let _ = self.save_config().await;
     }
 
     /// Add a domain to the excluded list
     pub async fn add_excluded_domain(&self, domain: String) {
-        let mut policy = self.policy.write().await;
-        if !policy.excluded_domains.contains(&domain) {
-            policy.excluded_domains.push(domain);
-            info!("Domain added to split-tunnel exclusions");
+        {
+            let current = self.policy.load();
+            if !current.excluded_domains.contains(&domain) {
+                let mut new_policy = (**current).clone();
+                new_policy.excluded_domains.push(domain);
+                self.policy.store(Arc::new(new_policy));
+                info!("Domain added to split-tunnel exclusions");
+            }
         }
+        let _ = self.save_config().await;
     }
 
     /// Remove a domain from the excluded list
     pub async fn remove_excluded_domain(&self, domain: &str) {
-        let mut policy = self.policy.write().await;
-        policy.excluded_domains.retain(|d| d != domain);
-        info!("Domain removed from split-tunnel exclusions");
+        {
+            let current = self.policy.load();
+            if current.excluded_domains.iter().any(|d| d == domain) {
+                let mut new_policy = (**current).clone();
+                new_policy.excluded_domains.retain(|d| d != domain);
+                self.policy.store(Arc::new(new_policy));
+                info!("Domain removed from split-tunnel exclusions");
+            }
+        }
+        let _ = self.save_config().await;
     }
 
     /// Set Tor bridges (e.g. from UI)
     pub async fn set_tor_bridges(&self, bridges: Vec<String>) {
-        let mut client = self.tor_client.write().await;
-        client.set_bridges(bridges);
-        info!("Updated Tor bridge configuration");
+        {
+            let mut client = self.tor_client.write().await;
+            client.set_bridges(bridges);
+            info!("Updated Tor bridge configuration");
+        }
+        let _ = self.save_config().await;
     }
 
     /// Start Mesh Agent
@@ -593,10 +735,10 @@ impl NetworkManager {
                 struct TorProxy(Arc<RwLock<vigilnet_tor::TorClient>>);
                 
                 #[async_trait::async_trait]
-                impl crate::tun_stack::BackendProxy for TorProxy {
-                    async fn connect(&self, host: &str, port: u16) -> crate::Result<Box<dyn crate::tun_stack::BackendStream>> {
+                impl BackendProxy for TorProxy {
+                    async fn connect(&self, host: &str, port: u16) -> crate::Result<Box<dyn BackendStream>> {
                         let client = self.0.read().await;
-                        client.connect(host, port).await.map(|s| Box::new(s) as Box<dyn crate::tun_stack::BackendStream>)
+                        client.connect(host, port).await.map(|s| Box::new(s) as Box<dyn BackendStream>)
                     }
                     async fn resolve(&self, host: &str) -> crate::Result<Vec<std::net::IpAddr>> {
                         let client = self.0.read().await;
@@ -604,7 +746,7 @@ impl NetworkManager {
                     }
                 }
 
-                let mut stack = crate::tun_stack::TunStack::new(packet_to_tun, Arc::new(TorProxy(tor_client)));
+                let mut stack = TunStack::new(packet_to_tun, Arc::new(TorProxy(tor_client)));
                 info!("TunStack running with Tor egress");
                 
                 loop {
@@ -719,6 +861,60 @@ impl NetworkManager {
         });
 
         Ok(())
+    }
+
+    /// Initialize the mobile agent manager
+    pub async fn init_agent_manager(&self, config: crate::agents::MobileAgentConfig) -> crate::Result<()> {
+        info!("Initializing mobile agent manager...");
+        
+        let mut agent_manager = MobileAgentManager::new(config);
+        agent_manager.initialize().await?;
+        
+        let mut am = self.agent_manager.write().await;
+        *am = Some(agent_manager);
+        
+        info!("Mobile agent manager initialized");
+        Ok(())
+    }
+
+    /// Start all mobile agents
+    pub async fn start_agents(&self) -> crate::Result<()> {
+        info!("Starting mobile agents...");
+        
+        let am = self.agent_manager.read().await;
+        if let Some(ref mut agent_manager) = *am {
+            agent_manager.start().await?;
+            info!("Mobile agents started");
+        } else {
+            warn!("Agent manager not initialized");
+        }
+        
+        Ok(())
+    }
+
+    /// Stop all mobile agents
+    pub async fn stop_agents(&self) -> crate::Result<()> {
+        info!("Stopping mobile agents...");
+        
+        let am = self.agent_manager.read().await;
+        if let Some(ref mut agent_manager) = *am {
+            agent_manager.stop().await?;
+            info!("Mobile agents stopped");
+        }
+        
+        Ok(())
+    }
+
+    /// Get circles service if available
+    pub fn get_circles_service(&self) -> Option<Arc<vigilnet_agent_circles::CirclesService>> {
+        let am = self.agent_manager.read().await;
+        am.as_ref().and_then(|m| m.get_circles_service())
+    }
+
+    /// Get mesh agent if available
+    pub fn get_mesh_agent(&self) -> Option<Arc<RwLock<vigilnet_agent_mesh::MeshFallback>>> {
+        let am = self.agent_manager.read().await;
+        am.as_ref().and_then(|m| m.get_mesh_agent())
     }
 }
 

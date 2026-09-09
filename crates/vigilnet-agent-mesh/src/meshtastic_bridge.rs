@@ -86,9 +86,9 @@ impl MeshtasticMessage {
     pub fn new(from_node: u32, to_node: u32, payload: Vec<u8>) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-        
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
         let message_id = rand::random();
 
         Self {

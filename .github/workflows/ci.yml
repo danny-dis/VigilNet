@@ -1,0 +1,652 @@
+name: VigilNet CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop, 'release/*']
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly security scan on Mondays
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-D warnings"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================================
+  # Code Quality & Security
+  # ============================================================================
+  lint-and-format:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check bans licenses sources
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run cargo-audit
+        uses: rustsec/audit-check@v1.4.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ============================================================================
+  # Build & Test Matrix
+  # ============================================================================
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable, nightly]
+        exclude:
+          - os: windows-latest
+            rust: nightly
+          - os: macos-latest
+            rust: nightly
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config protobuf-compiler
+
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install protobuf
+
+      - name: Install dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install protoc
+
+      - name: Build workspace
+        run: cargo build --workspace --all-features
+
+      - name: Run tests
+        run: cargo test --workspace --all-features -- --test-threads=4
+
+      - name: Run doc tests
+        run: cargo test --doc --workspace --all-features
+
+      - name: Generate coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
+        run: |
+          cargo install cargo-tarpaulin
+          cargo tarpaulin --workspace --all-features --out xml --output-dir coverage
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
+        uses: codecov/codecov-action@v3
+        with:
+          files: coverage/cobertura.xml
+          fail_ci_if_error: true
+
+  # ============================================================================
+  # Cross-Compilation & Release Builds
+  # ============================================================================
+  build-release:
+    name: Build Release (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    needs: [lint-and-format, test]
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: vigilnet
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            binary: vigilnet
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: vigilnet
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            binary: vigilnet
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: vigilnet
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: vigilnet.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: |
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            cargo build --release --target ${{ matrix.target }} --features vendored-openssl
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        shell: bash
+
+      - name: Strip binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          strip target/${{ matrix.target }}/release/${{ matrix.binary }}
+
+      - name: Package binary
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION=${VERSION:-"dev"}
+          ARCHIVE="vigilnet-${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/${ARCHIVE}"
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} "dist/${ARCHIVE}/"
+          cp README.md USAGE.md LICENSE "dist/${ARCHIVE}/" 2>/dev/null || true
+          cd dist
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a "${ARCHIVE}.zip" "${ARCHIVE}"
+          else
+            tar czf "${ARCHIVE}.tar.gz" "${ARCHIVE}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vigilnet-${{ matrix.target }}
+          path: dist/*
+          retention-days: 30
+
+  # ============================================================================
+  # Android Build
+  # ============================================================================
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    needs: [lint-and-format, test]
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Android targets
+        run: |
+          rustup target add aarch64-linux-android
+          rustup target add armv7-linux-androideabi
+          rustup target add x86_64-linux-android
+          rustup target add i686-linux-android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;25.2.9519653" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
+
+      - name: Build Rust for Android
+        run: |
+          export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          ./scripts/build_android.ps1 || ./scripts/build_android.sh
+        shell: bash
+
+      - name: Build Android APK
+        working-directory: ./android
+        run: ./gradlew assembleRelease
+
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: android/app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: vigilnet-android
+          path: android/app/build/outputs/apk/release/*.apk
+
+  # ============================================================================
+  # Docker Build
+  # ============================================================================
+  build-docker:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [lint-and-format, test]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKER_USERNAME }}/vigilnet
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  # ============================================================================
+  # Integration Tests
+  # ============================================================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [build-docker]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    services:
+      prometheus:
+        image: prom/prometheus:latest
+        ports:
+          - 9090:9090
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run integration tests
+        run: |
+          docker-compose -f docker-compose.test.yml up -d
+          sleep 30
+          cargo test --test integration -- --nocapture
+          docker-compose -f docker-compose.test.yml down
+
+  # ============================================================================
+  # Cryptographic Tests (Critical)
+  # ============================================================================
+  crypto-tests:
+    name: Cryptographic Tests
+    runs-on: ubuntu-latest
+    needs: [lint-and-format]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Run crypto unit tests
+        run: cargo test -p vigilnet-crypto --all-features -- --nocapture
+
+      - name: Run crypto integration tests
+        run: cargo test -p vigilnet-crypto --test '*' --all-features
+
+      - name: Generate crypto coverage
+        run: |
+          cargo install cargo-tarpaulin
+          cargo tarpaulin -p vigilnet-crypto --all-features --out xml --output-dir crypto-coverage
+
+      - name: Verify crypto coverage (95% threshold)
+        run: |
+          COVERAGE=$(grep -o 'line-rate="[0-9.]*"' crypto-coverage/cobertura.xml | head -1 | sed 's/line-rate="//;s/"//')
+          echo "Crypto coverage: $COVERAGE"
+          if (( $(echo "$COVERAGE < 0.95" | bc -l) )); then
+            echo "ERROR: Crypto coverage $COVERAGE is below 95% threshold"
+            exit 1
+          fi
+
+  # ============================================================================
+  # E2E Tests (Nightly & PRs with [e2e] tag)
+  # ============================================================================
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [integration-tests, build-docker]
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[e2e]')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup E2E environment
+        run: |
+          docker-compose -f tests/e2e/docker-compose.yml up -d
+          sleep 30
+          docker-compose -f tests/e2e/docker-compose.yml ps
+
+      - name: Run E2E tests
+        run: cargo test --workspace --test e2e -- --test-threads=1 --nocapture
+        timeout-minutes: 30
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker-compose -f tests/e2e/docker-compose.yml logs > e2e-logs.txt
+          docker-compose -f tests/e2e/docker-compose.yml logs > e2e-logs-$(date +%Y%m%d-%H%M%S).txt
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-logs
+          path: e2e-logs*.txt
+
+      - name: Cleanup
+        if: always()
+        run: docker-compose -f tests/e2e/docker-compose.yml down -v
+
+  # ============================================================================
+  # Performance Tests (Nightly)
+  # ============================================================================
+  performance-tests:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: [integration-tests]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install criterion
+        run: cargo install cargo-criterion
+
+      - name: Run benchmarks
+        run: |
+          cargo bench --workspace -- --noplot | tee benchmark-results.txt
+
+      - name: Compare with baseline
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'cargo'
+          output-file-path: benchmark-results.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: false
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark-results.txt
+
+  # ============================================================================
+  # Security Tests (Weekly)
+  # ============================================================================
+  security-tests:
+    name: Security Tests
+    runs-on: ubuntu-latest
+    needs: [integration-tests]
+    if: github.event.schedule == '0 6 * * 1' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install security tools
+        run: |
+          cargo install cargo-geiger cargo-fuzz
+
+      - name: Check unsafe code usage
+        run: cargo geiger --all-features --output-format Ratio
+
+      - name: Run miri tests
+        run: |
+          rustup component add miri
+          cargo miri test -p vigilnet-crypto --lib -- \
+            --skip network \
+            2>&1 | head -100
+        continue-on-error: true
+
+      - name: Run fuzz tests (5 min each target)
+        run: |
+          for target in message_parser crypto_operations; do
+            if [ -d "fuzz/$target" ]; then
+              echo "Fuzzing $target..."
+              timeout 300 cargo fuzz run $target -- -max_total_time=180 || true
+            fi
+          done
+        continue-on-error: true
+
+      - name: Static analysis with semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            .semgrep/security.yml
+
+  # ============================================================================
+  # Coverage Report
+  # ============================================================================
+  coverage-report:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    needs: [test, crypto-tests]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Generate coverage
+        run: |
+          cargo tarpaulin --workspace --all-features --out html --output-dir coverage-report
+          cargo tarpaulin --workspace --all-features --out xml --output-dir coverage-report
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-report/
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./coverage-report
+
+  # ============================================================================
+  # Release
+  # ============================================================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-release, build-android, build-docker]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate changelog
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v4
+        with:
+          configuration: .github/changelog-config.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body: ${{ steps.changelog.outputs.changelog }}
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/**/*.apk
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+
+  # ============================================================================
+  # Deploy to Staging
+  # ============================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-docker]
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      url: https://staging.vigilnet.io
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment..."
+          # Add your staging deployment commands here
+          # e.g., kubectl, helm, or direct SSH deployment
+
+  # ============================================================================
+  # Deploy to Production
+  # ============================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [release, e2e-tests, security-tests, coverage-report]
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha')
+    environment:
+      name: production
+      url: https://vigilnet.io
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production environment..."
+          # Add your production deployment commands here
+          # e.g., kubectl, helm, or direct SSH deployment
+
+      - name: Notify on success
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "🚀 VigilNet ${{ github.ref_name }} deployed to production!"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "❌ VigilNet ${{ github.ref_name }} deployment to production FAILED!"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

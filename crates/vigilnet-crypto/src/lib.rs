@@ -5,19 +5,24 @@
 //! - Session keys (X25519 Diffie-Hellman)
 //! - Onion encryption/decryption (AES-GCM layers)
 //! - Signal Protocol E2EE (X3DH + Double Ratchet)
+//! - Hash functions (BLAKE3)
 
 pub mod aead;
+pub mod e2ee;
+pub mod hash;
 pub mod keys;
 pub mod onion;
 pub mod ratchet;
 pub mod session;
 pub mod x3dh;
 
-pub use aead::{decrypt, encrypt, decrypt_with_aad, encrypt_with_aad, AesGcmCipher, NONCE_SIZE, TAG_SIZE};
+pub use aead::{decrypt, decrypt_with_aed, encrypt, encrypt_with_aed, AesGcmCipher, NONCE_SIZE, TAG_SIZE};
+pub use e2ee::{DoubleRatchet, E2eeMessage};
+pub use hash::{blake3, blake3_hex, sha256, sha256_hex};
 pub use keys::{Identity, PublicKeyInfo, SessionKey};
 pub use onion::{OnionLayer, OnionPacket, CircuitCell, RelayCell, CreateCell, BeginCell, ExtendedCell, ConnectedCell, RelayCommand};
 pub use ratchet::{
-    DoubleRatchet, EncryptedMessage, MessageHeader, MessageKey, RatchetDH, RatchetKeyPair,
+    DoubleRatchet as Ratchet, EncryptedMessage, MessageHeader, MessageKey, RatchetDH, RatchetKeyPair,
     RatchetState, RatchetSymmetricKey, SkippedMessageKey,
 };
 pub use session::{
@@ -27,10 +32,8 @@ pub use x3dh::{
     IdentityKeyPair, OneTimePreKey, PreKeyBundle, SignedPreKey, X3DH, X3DHInitiatorState,
 };
 
-/// Result type for crypto operations
 pub type Result<T> = std::result::Result<T, CryptoError>;
 
-/// Crypto error types
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
     #[error("Encryption failed: {0}")]

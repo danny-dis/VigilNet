@@ -25,7 +25,9 @@ pub struct TcpConfig {
 impl Default for TcpConfig {
     fn default() -> Self {
         Self {
-            bind_addr: "0.0.0.0:0".parse().unwrap(),
+            bind_addr: "0.0.0.0:0"
+                .parse()
+                .expect("hardcoded bind address should be valid"),
             nodelay: true,
             keepalive: Some(Duration::from_secs(30)),
             connect_timeout: Duration::from_secs(10),
@@ -237,5 +239,471 @@ impl AgentConnection for TcpConnection {
             .await
             .map_err(|e| TransportError::Send(e.to_string()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================
+    // Unit Tests for Core Functionality
+    // ============================================
+
+    #[test]
+    fn test_tcp_config_default() {
+        let config = TcpConfig::default();
+        assert_eq!(config.bind_addr.to_string(), "0.0.0.0:0");
+        assert!(config.nodelay);
+        assert_eq!(config.keepalive, Some(Duration::from_secs(30)));
+        assert_eq!(config.connect_timeout, Duration::from_secs(10));
+        assert_eq!(config.send_buffer_size, 1024 * 1024);
+        assert_eq!(config.recv_buffer_size, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_tcp_config_clone() {
+        let config = TcpConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.nodelay, cloned.nodelay);
+        assert_eq!(config.keepalive, cloned.keepalive);
+        assert_eq!(config.connect_timeout, cloned.connect_timeout);
+    }
+
+    #[test]
+    fn test_tcp_transport_creation() {
+        let config = TcpConfig::default();
+        let transport = TcpAgentTransport::new(config);
+        assert_eq!(transport.transport_kind(), TransportKind::Tcp);
+    }
+
+    #[test]
+    fn test_tcp_transport_kind() {
+        let config = TcpConfig::default();
+        let transport = TcpAgentTransport::new(config);
+        assert_eq!(transport.transport_kind(), TransportKind::Tcp);
+    }
+
+    // ============================================
+    // Async Tests for Bind
+    // ============================================
+
+    #[tokio::test]
+    async fn test_tcp_bind_success() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        let result = transport.bind().await;
+        assert!(result.is_ok());
+        
+        // Verify we can get local address
+        let local_addr = transport.local_addr();
+        assert!(local_addr.is_ok());
+        
+        transport.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_tcp_bind_specific_port() {
+        let config = TcpConfig {
+            bind_addr: "127.0.0.1:0".parse().expect("hardcoded address should parse"),
+            ..Default::default()
+        };
+        let mut transport = TcpAgentTransport::new(config);
+        let result = transport.bind().await;
+        assert!(result.is_ok());
+        
+        let local_addr = transport.local_addr().ok();
+        if let Some(addr) = local_addr {
+            assert_eq!(addr.ip().to_string(), "127.0.0.1");
+            assert!(addr.port() > 0);
+        }
+        
+        transport.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_tcp_bind_multiple_times() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        
+        // First bind should succeed
+        assert!(transport.bind().await.is_ok());
+        
+        // Second bind should also work (will create new listener)
+        assert!(transport.bind().await.is_ok());
+        
+        transport.shutdown().await.ok();
+    }
+
+    // ============================================
+    // Async Tests for Accept
+    // ============================================
+
+    #[tokio::test]
+    async fn test_tcp_accept_not_bound() {
+        let config = TcpConfig::default();
+        let transport = TcpAgentTransport::new(config);
+        
+        // accept without binding should fail
+        let result = transport.accept().await;
+        assert!(result.is_err());
+        match result {
+            Err(TransportError::NotBound) => {}
+            _ => panic!("Expected NotBound error"),
+        }
+    }
+
+    // ============================================
+    // Async Tests for Local Address
+    // ============================================
+
+    #[tokio::test]
+    async fn test_tcp_local_addr_not_bound() {
+        let config = TcpConfig::default();
+        let transport = TcpAgentTransport::new(config);
+        
+        let result = transport.local_addr();
+        assert!(result.is_err());
+        match result {
+            Err(TransportError::NotBound) => {}
+            _ => panic!("Expected NotBound error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tcp_local_addr_after_bind() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        
+        transport.bind().await.ok();
+        let local_addr = transport.local_addr();
+        assert!(local_addr.is_ok());
+        
+        transport.shutdown().await.ok();
+    }
+
+    // ============================================
+    // Async Tests for Connect
+    // ============================================
+
+    #[tokio::test]
+    async fn test_tcp_connect_timeout() {
+        let config = TcpConfig {
+            connect_timeout: Duration::from_millis(100), // Very short timeout
+            ..Default::default()
+        };
+        let transport = TcpAgentTransport::new(config);
+        
+        // Try to connect to address that won't respond
+        let addr: SocketAddr = "192.0.2.1:12345".parse().expect("TEST-NET-1 address should parse");
+        let result = transport.connect(addr).await;
+        
+        // Should timeout or fail
+        assert!(result.is_err());
+    }
+
+    // ============================================
+    // Async Tests for Shutdown
+    // ============================================
+
+    #[tokio::test]
+    async fn test_tcp_shutdown_not_bound() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        
+        // Shutdown without binding should succeed
+        let result = transport.shutdown().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_tcp_shutdown_after_bind() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        
+        transport.bind().await.ok();
+        let result = transport.shutdown().await;
+        assert!(result.is_ok());
+        
+        // After shutdown, should not be able to get local addr
+        let result = transport.local_addr();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_tcp_shutdown_idempotent() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        
+        transport.bind().await.ok();
+        
+        // Multiple shutdowns should be safe
+        for _ in 0..5 {
+            let result = transport.shutdown().await;
+            assert!(result.is_ok());
+        }
+    }
+
+    // ============================================
+    // Integration Tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_tcp_full_lifecycle() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        
+        // Bind
+        transport.bind().await.ok();
+        let local_addr = transport.local_addr().ok();
+        if let Some(addr) = local_addr {
+            assert!(addr.port() > 0);
+        }
+        
+        // Shutdown
+        transport.shutdown().await.ok();
+        
+        // Verify shutdown
+        assert!(transport.local_addr().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_tcp_multiple_binds() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        
+        let mut addrs = vec![];
+        for _ in 0..3 {
+            transport.bind().await.ok();
+            if let Ok(addr) = transport.local_addr() {
+                addrs.push(addr);
+            }
+        }
+        
+        // Each bind should have succeeded
+        assert_eq!(addrs.len(), 3);
+        
+        transport.shutdown().await.ok();
+    }
+
+    // ============================================
+    // Error Handling Tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_tcp_operations_after_shutdown() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        
+        transport.bind().await.ok();
+        transport.shutdown().await.ok();
+        
+        // After shutdown, local_addr should fail
+        let result = transport.local_addr();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tcp_config_variations() {
+        // Test various config combinations
+        let configs = vec![
+            TcpConfig {
+                nodelay: false,
+                keepalive: None,
+                ..Default::default()
+            },
+            TcpConfig {
+                send_buffer_size: 512 * 1024,
+                recv_buffer_size: 512 * 1024,
+                ..Default::default()
+            },
+            TcpConfig {
+                connect_timeout: Duration::from_secs(30),
+                ..Default::default()
+            },
+        ];
+        
+        for config in configs {
+            let _ = TcpAgentTransport::new(config);
+        }
+    }
+
+    // ============================================
+    // Edge Case Tests
+    // ============================================
+
+    #[test]
+    fn test_tcp_config_zero_timeout() {
+        let config = TcpConfig {
+            connect_timeout: Duration::ZERO,
+            ..Default::default()
+        };
+        let _ = TcpAgentTransport::new(config);
+    }
+
+    #[test]
+    fn test_tcp_config_large_timeout() {
+        let config = TcpConfig {
+            connect_timeout: Duration::from_secs(3600),
+            ..Default::default()
+        };
+        let _ = TcpAgentTransport::new(config);
+    }
+
+    #[test]
+    fn test_tcp_config_zero_buffer_size() {
+        let config = TcpConfig {
+            send_buffer_size: 0,
+            recv_buffer_size: 0,
+            ..Default::default()
+        };
+        let _ = TcpAgentTransport::new(config);
+    }
+
+    #[test]
+    fn test_tcp_config_large_buffer_size() {
+        let config = TcpConfig {
+            send_buffer_size: 16 * 1024 * 1024, // 16MB
+            recv_buffer_size: 16 * 1024 * 1024,
+            ..Default::default()
+        };
+        let _ = TcpAgentTransport::new(config);
+    }
+
+    #[tokio::test]
+    async fn test_tcp_connect_to_invalid_address() {
+        let config = TcpConfig::default();
+        let transport = TcpAgentTransport::new(config);
+        
+        // Test with various addresses
+        let addrs = vec![
+            "127.0.0.1:0".parse().expect("hardcoded address should parse"),
+            "0.0.0.0:0".parse().expect("hardcoded address should parse"),
+        ];
+        
+        for addr in addrs {
+            let result = transport.connect(addr).await;
+            // May succeed or fail depending on OS
+            let _ = result;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tcp_concurrent_binds() {
+        use std::sync::Arc;
+        
+        let config = TcpConfig::default();
+        let transport = Arc::new(tokio::sync::Mutex::new(TcpAgentTransport::new(config)));
+        
+        let mut handles = vec![];
+        
+        for _ in 0..5 {
+            let t = Arc::clone(&transport);
+            let handle = tokio::spawn(async move {
+                let mut guard = t.lock().await;
+                guard.bind().await
+            });
+            handles.push(handle);
+        }
+        
+        for handle in handles {
+            let result = handle.await.ok();
+            // Some may succeed, some may fail due to port conflicts
+            let _ = result;
+        }
+        
+        transport.lock().await.shutdown().await.ok();
+    }
+
+    #[test]
+    fn test_tcp_transport_debug() {
+        let config = TcpConfig::default();
+        let transport = TcpAgentTransport::new(config);
+        let debug_str = format!("{:?}", transport);
+        assert!(!debug_str.is_empty());
+    }
+
+    #[test]
+    fn test_tcp_config_debug() {
+        let config = TcpConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("TcpConfig") || !debug_str.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_tcp_transport_trait_bounds() {
+        // Compile-time test that TcpAgentTransport implements AgentTransport
+        fn check_trait<T: AgentTransport>(_transport: T) {}
+        let config = TcpConfig::default();
+        check_trait(TcpAgentTransport::new(config));
+    }
+
+    #[tokio::test]
+    async fn test_tcp_connection_trait_bounds() {
+        // Compile-time test - TcpConnection implements AgentConnection
+        // This is verified by the fact that accept() and connect() return Box<dyn AgentConnection>
+    }
+
+    #[tokio::test]
+    async fn test_tcp_multiple_instances() {
+        let transports: Vec<_> = (0..5)
+            .map(|_| TcpAgentTransport::new(TcpConfig::default()))
+            .collect();
+        
+        let mut handles = vec![];
+        for mut transport in transports {
+            let handle = tokio::spawn(async move {
+                transport.bind().await
+            });
+            handles.push(handle);
+        }
+        
+        for handle in handles {
+            let result = handle.await.ok();
+            // Check if result is ok, but don't unwrap
+            if let Some(Ok(())) = result {
+                // Bind succeeded
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tcp_bind_with_different_addresses() {
+        let addresses: Vec<SocketAddr> = vec![
+            "0.0.0.0:0".parse().expect("hardcoded address should parse"),
+            "127.0.0.1:0".parse().expect("hardcoded address should parse"),
+            "[::1]:0".parse().expect("hardcoded IPv6 address should parse"),
+        ];
+        
+        for addr in addresses {
+            let config = TcpConfig {
+                bind_addr: addr,
+                ..Default::default()
+            };
+            let mut transport = TcpAgentTransport::new(config);
+            
+            // IPv6 might fail on some systems, so we just verify it doesn't panic
+            let result = transport.bind().await;
+            if result.is_ok() {
+                transport.shutdown().await.ok();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tcp_transport_state_consistency() {
+        let config = TcpConfig::default();
+        let mut transport = TcpAgentTransport::new(config);
+        
+        // Initial state - not bound
+        assert!(transport.local_addr().is_err());
+        
+        // After bind
+        transport.bind().await.ok();
+        assert!(transport.local_addr().is_ok());
+        
+        // After shutdown
+        transport.shutdown().await.ok();
+        assert!(transport.local_addr().is_err());
     }
 }

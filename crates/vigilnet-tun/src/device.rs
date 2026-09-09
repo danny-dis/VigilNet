@@ -28,8 +28,12 @@ impl Default for TunConfig {
         Self {
             name: "vigilnet0".to_string(),
             mtu: 1500,
-            address: IpAddr::V4("10.0.0.1".parse().unwrap()),
-            netmask: IpAddr::V4("255.255.255.0".parse().unwrap()),
+            address: IpAddr::V4(
+                "10.0.0.1".parse().expect("Default IP address should be valid")
+            ),
+            netmask: IpAddr::V4(
+                "255.255.255.0".parse().expect("Default netmask should be valid")
+            ),
             set_default_route: false,
             enable_firewall: false,
             enable_dhcp_guard: false,

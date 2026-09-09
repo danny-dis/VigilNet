@@ -4,7 +4,7 @@
 
 use crate::{Circuit, CircuitHop, CircuitId, PathSelector, PendingCircuit, Result, RoutingError};
 use std::collections::{HashMap, VecDeque};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 use vigilnet_crypto::{SessionKey, onion::{CreateCell, CreatedCell, ExtendCell, ExtendedCell}};
 use rand::seq::SliceRandom;
 
@@ -50,7 +50,9 @@ pub struct CircuitBuilder {
 
 impl CircuitBuilder {
     /// Create a new circuit builder
+    #[instrument(level = "info")]
     pub fn new(path_selector: PathSelector) -> Self {
+        info!("Creating new CircuitBuilder with default config");
         Self {
             path_selector,
             pending_circuits: HashMap::new(),
@@ -62,7 +64,13 @@ impl CircuitBuilder {
     }
 
     /// Create with custom configuration
+    #[instrument(skip(path_selector, config), level = "info")]
     pub fn with_config(path_selector: PathSelector, config: BuilderConfig) -> Self {
+        info!(
+            target_circuits = config.target_circuits,
+            max_concurrent_builds = config.max_concurrent_builds,
+            "Creating CircuitBuilder with custom config"
+        );
         Self {
             path_selector,
             pending_circuits: HashMap::new(),
@@ -161,9 +169,13 @@ impl CircuitBuilder {
     /// Initialize a new circuit
     ///
     /// Returns the initial CREATE cell to send to the entry node
+    #[instrument(skip(self), level = "info")]
     pub fn init_circuit(&mut self) -> Result<(CircuitId, [u8; 32], CreateCell)> {
+        trace!("Selecting 3-hop path for circuit");
+
         // 1. Select 3 hops
         let hops = self.path_selector.select_path(3).ok_or_else(|| {
+            error!("Insufficient relays for 3-hop circuit");
             RoutingError::NoPath("Insufficient relays for 3-hop circuit".into())
         })?;
 
@@ -171,7 +183,14 @@ impl CircuitBuilder {
         self.next_circuit_id += 1;
 
         let entry_peer = hops[0].peer_id;
-        
+        info!(
+            circuit_id,
+            entry_peer = ?entry_peer,
+            middle_peer = ?hops[1].peer_id,
+            exit_peer = ?hops[2].peer_id,
+            "Initializing circuit with 3-hop path"
+        );
+
         // 2. Create pending circuit state
         let mut pending = PendingCircuit::new(circuit_id);
         for hop in &hops {
@@ -179,73 +198,108 @@ impl CircuitBuilder {
         }
 
         // 3. Generate first ephemeral key
+        trace!("Generating ephemeral key for first hop");
         let (secret, public) = SessionKey::generate_ephemeral();
         pending.add_secret(secret);
-        
-        self.pending_circuits.insert(circuit_id, pending);
 
-        debug!("Initialized circuit {} with path: {:?}", circuit_id, hops.iter().map(|h| h.peer_id).collect::<Vec<_>>());
+        self.pending_circuits.insert(circuit_id, pending);
+        debug!(
+            circuit_id,
+            pending_circuits = self.pending_circuits.len(),
+            "Pending circuit created"
+        );
 
         // 4. Create CREATE cell
+        trace!("Creating CREATE cell");
         let cell = CreateCell::new(circuit_id, *public.as_bytes());
-        
+
+        info!(circuit_id, "Circuit initialization complete");
         Ok((circuit_id, entry_peer, cell))
     }
 
     /// Handle CREATED response from entry node
     ///
     /// Returns the EXTEND cell to send to the middle node (wrapped in RELAY)
+    #[instrument(skip(self, cell), level = "info")]
     pub fn handle_created(&mut self, cell: CreatedCell) -> Result<ExtendCell> {
+        info!(circuit_id = cell.circuit_id, "Handling CREATED response");
+
         let pending = self.pending_circuits.get_mut(&cell.circuit_id)
-            .ok_or_else(|| RoutingError::Circuit(format!("Unknown pending circuit {}", cell.circuit_id)))?;
+            .ok_or_else(|| {
+                error!(circuit_id = cell.circuit_id, "Unknown pending circuit");
+                RoutingError::Circuit(format!("Unknown pending circuit {}", cell.circuit_id))
+            })?;
 
         if pending.hops_complete != 0 {
+            error!(
+                circuit_id = cell.circuit_id,
+                hops_complete = pending.hops_complete,
+                "Unexpected CREATED cell state"
+            );
             return Err(RoutingError::Circuit("Unexpected CREATED cell state".into()));
         }
 
         // 1. Derive session key
-        let secret = pending.ephemeral_secrets.first().unwrap();
-        // Convert [u8; 32] to PublicKey for x25519_dalek
+        trace!("Deriving session key for entry hop");
+        let secret = pending.ephemeral_secrets.first()
+            .ok_or_else(|| {
+                error!("No ephemeral secret for hop 0");
+                RoutingError::Circuit("No ephemeral secret for hop 0".into())
+            })?;
+
         let peer_public = x25519_dalek::PublicKey::from(cell.dh_public);
         let session_key = SessionKey::exchange(secret, &peer_public);
-        
+
         pending.complete_hop(session_key);
-        info!("Circuit {} hop 1 (Entry) established", cell.circuit_id);
+        info!(circuit_id = cell.circuit_id, "Hop 1 (Entry) established");
 
         // 2. Prepare handshake for hop 2 (Middle)
         let middle_peer = pending.peer_ids[1];
+        trace!(middle_peer = ?middle_peer, "Preparing handshake for middle hop");
         let (secret_2, public_2) = SessionKey::generate_ephemeral();
         pending.add_secret(secret_2);
 
         // 3. Create EXTEND cell for entry -> middle
+        trace!("Creating EXTEND cell for middle hop");
         Ok(ExtendCell::new(middle_peer, *public_2.as_bytes()))
     }
 
     /// Handle EXTENDED response from middle/exit node
     ///
     /// Returns optional next EXTEND cell (if more hops needed), or the completed Circuit
+    #[instrument(skip(self, cell), level = "info")]
     pub fn handle_extended(&mut self, circuit_id: u32, cell: ExtendedCell) -> Result<Option<(ExtendCell, Option<Circuit>)>> {
+        info!(circuit_id, "Handling EXTENDED response");
+
         let pending = self.pending_circuits.get_mut(&circuit_id)
-            .ok_or_else(|| RoutingError::Circuit(format!("Unknown pending circuit {}", circuit_id)))?;
+            .ok_or_else(|| {
+                error!(circuit_id, "Unknown pending circuit");
+                RoutingError::Circuit(format!("Unknown pending circuit {}", circuit_id))
+            })?;
 
         // Current hop index (1 = middle, 2 = exit)
         let current_hop = pending.hops_complete;
         if current_hop >= 3 {
-             return Err(RoutingError::Circuit("Circuit already complete".into()));
+            error!(circuit_id, current_hop, "Circuit already complete");
+            return Err(RoutingError::Circuit("Circuit already complete".into()));
         }
 
         // 1. Derive session key for this hop
+        trace!(current_hop, "Deriving session key");
         let secret = &pending.ephemeral_secrets[current_hop];
         let peer_public = x25519_dalek::PublicKey::from(cell.dh_public);
         let session_key = SessionKey::exchange(secret, &peer_public);
-        
+
         pending.complete_hop(session_key);
-        info!("Circuit {} hop {} established", circuit_id, current_hop + 1);
+        info!(circuit_id, hop_num = current_hop + 1, "Hop established");
 
         // 2. Check if circuit is complete (3 hops)
         if pending.hops_complete == 3 {
+            info!(circuit_id, "All 3 hops complete, finalizing circuit");
+
             // Finalize circuit
             let mut circuit = Circuit::new(circuit_id);
+
             // Move state from pending to circuit
             for i in 0..3 {
                 circuit.add_hop(CircuitHop {
@@ -255,24 +309,35 @@ impl CircuitBuilder {
                 })?;
             }
             circuit.set_ready();
-            
+
             // Cleanup pending
             self.pending_circuits.remove(&circuit_id);
-            
+            debug!(pending_count = self.pending_circuits.len(), "Pending circuit removed");
+
+            // Add to completed circuits
+            self.completed_circuits.push(circuit);
+            info!(
+                circuit_id,
+                completed_count = self.completed_circuits.len(),
+                "Circuit completed and ready"
+            );
+
             return Ok(Some((
-                 // Dummy extend cell not used here
-                 ExtendCell::new([0u8; 32], [0u8; 32]), 
-                 Some(circuit)
+                // Dummy extend cell not used here
+                ExtendCell::new([0u8; 32], [0u8; 32]),
+                Some(circuit)
             )));
         }
 
         // 3. Prepare handshake for next hop (Exit)
-        let next_peer = pending.peer_ids[pending.hops_complete]; // hop index matches next peer index
+        let next_peer = pending.peer_ids[pending.hops_complete];
+        trace!(next_peer = ?next_peer, "Preparing handshake for next hop");
         let (secret_next, public_next) = SessionKey::generate_ephemeral();
         pending.add_secret(secret_next);
 
         let extend_cell = ExtendCell::new(next_peer, *public_next.as_bytes());
-        
+        trace!("EXTEND cell created for next hop");
+
         Ok(Some((extend_cell, None)))
     }
     /// Get the first hop (entry node) for a pending circuit

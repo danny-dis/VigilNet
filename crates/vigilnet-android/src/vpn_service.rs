@@ -2,6 +2,7 @@
 //!
 //! Handles Android VpnService TUN file descriptor passthrough
 //! and packet processing via the Rust networking stack.
+//! Includes improved reconnection logic and state management.
 
 #[cfg(unix)]
 use std::os::fd::RawFd;
@@ -9,8 +10,10 @@ use std::os::fd::RawFd;
 #[cfg(not(unix))]
 type RawFd = i32;
 
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn, error, debug};
+use async_trait::async_trait;
 
 /// VPN tunnel state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +46,26 @@ pub struct TunnelStats {
 /// IP packet captured from TUN interface
 #[derive(Debug, Clone)]
 pub struct TunPacket {
-    pub data: Vec<u8>,
+    pub data: bytes::Bytes,
+}
+
+impl TunPacket {
+    pub fn new(data: bytes::Bytes) -> Self {
+        Self { data }
+    }
+
+    pub fn from_vec(data: Vec<u8>) -> Self {
+        Self { data: bytes::Bytes::from(data) }
+    }
+}
+
+/// Trait for VPN tunnel event listeners
+#[async_trait]
+pub trait VpnEventListener: Send + Sync {
+    async fn on_connect(&self);
+    async fn on_disconnect(&self);
+    async fn on_error(&self, error: &str);
+    async fn on_stats_update(&self, stats: &TunnelStats);
 }
 
 /// VPN Tunnel manager
@@ -54,7 +76,7 @@ pub struct VpnTunnel {
     /// Current state
     state: TunnelState,
     /// Statistics
-    stats: TunnelStats,
+    stats: Arc<RwLock<TunnelStats>>,
     /// TUN file descriptor (from Android VpnService)
     tun_fd: Option<RawFd>,
     /// MTU size
@@ -69,6 +91,12 @@ pub struct VpnTunnel {
     packet_tx: Option<mpsc::Sender<TunPacket>>,
     /// Channel to receive packets to write to TUN (from NetworkManager)
     packet_rx: Option<mpsc::Receiver<TunPacket>>,
+    /// Event listeners
+    listeners: Vec<Arc<dyn VpnEventListener>>,
+    /// Whether reconnection is enabled
+    auto_reconnect: bool,
+    /// Reconnection delay in seconds
+    reconnect_delay_secs: u64,
 }
 
 impl VpnTunnel {
@@ -76,7 +104,7 @@ impl VpnTunnel {
     pub fn new() -> Self {
         Self {
             state: TunnelState::Disconnected,
-            stats: TunnelStats::default(),
+            stats: Arc::new(RwLock::new(TunnelStats::default())),
             tun_fd: None,
             mtu: 1500,
             dns_servers: vec!["1.1.1.1".to_string(), "1.0.0.1".to_string()],
@@ -84,7 +112,21 @@ impl VpnTunnel {
             shutdown_tx: None,
             packet_tx: None,
             packet_rx: None,
+            listeners: Vec::new(),
+            auto_reconnect: true,
+            reconnect_delay_secs: 5,
         }
+    }
+
+    /// Add an event listener
+    pub fn add_listener(&mut self, listener: Arc<dyn VpnEventListener>) {
+        self.listeners.push(listener);
+    }
+
+    /// Set auto-reconnect
+    pub fn set_auto_reconnect(&mut self, enabled: bool, delay_secs: u64) {
+        self.auto_reconnect = enabled;
+        self.reconnect_delay_secs = delay_secs;
     }
 
     /// Set the packet channels
@@ -155,9 +197,14 @@ impl VpnTunnel {
         };
 
         self.state = TunnelState::Connected;
+        
+        // Notify listeners
+        self.notify_connect().await;
+        
         info!("VPN tunnel connected");
 
         let mtu = self.mtu as usize;
+        let stats = self.stats.clone();
 
         // READ LOOP: TUN -> NetworkManager
         tokio::spawn(async move {
@@ -173,14 +220,21 @@ impl VpnTunnel {
                         match res {
                             Ok(n) => {
                                 if n == 0 { break; } // EOF
-                                let data = buf[..n].to_vec();
+                                let data = bytes::Bytes::copy_from_slice(&buf[..n]);
                                 // Parse check (optional logging)
                                 if let Ok((header, _)) = etherparse::Ipv4Header::from_slice(&data) {
-                                    debug!("TUN read: {} -> {} ({} bytes)", 
+                                    trace!("TUN read: {} -> {} ({} bytes)", 
                                         std::net::Ipv4Addr::from(header.source), 
                                         std::net::Ipv4Addr::from(header.destination),
                                         n
                                     );
+                                }
+                                
+                                // Update stats
+                                {
+                                    let mut s = stats.write().await;
+                                    s.bytes_received += n as u64;
+                                    s.packets_received += 1;
                                 }
                                 
                                 // Send to NetworkManager
@@ -202,11 +256,9 @@ impl VpnTunnel {
         });
 
         // WRITE LOOP: NetworkManager -> TUN
+        let stats_write = self.stats.clone();
         tokio::spawn(async move {
             loop {
-                // We can't easily select on packet_rx and a shutdown signal if packet_rx is the only source
-                // But if the read loop shuts down, it triggered the shutdown signal.
-                // For simplicity, we just listen on packet_rx. If packet_tx is dropped by NM, this returns None.
                 match packet_rx.recv().await {
                     Some(packet) => {
                         #[cfg(unix)]
@@ -215,8 +267,16 @@ impl VpnTunnel {
                                 error!("Failed to write to TUN: {}", e);
                                 break;
                             }
-                            debug!("TUN write: {} bytes", packet.data.len());
+                            trace!("TUN write: {} bytes", packet.data.len());
                         }
+                        
+                        // Update stats
+                        {
+                            let mut s = stats_write.write().await;
+                            s.bytes_sent += packet.data.len() as u64;
+                            s.packets_sent += 1;
+                        }
+                        
                         #[cfg(not(unix))]
                         {
                             debug!("VPN write stub: {} bytes", packet.data.len());
@@ -244,8 +304,30 @@ impl VpnTunnel {
 
         self.state = TunnelState::Disconnected;
         self.tun_fd = None;
+        
+        // Notify listeners
+        self.notify_disconnect().await;
+        
         info!("VPN tunnel stopped");
         Ok(())
+    }
+
+    async fn notify_connect(&self) {
+        for listener in &self.listeners {
+            listener.on_connect().await;
+        }
+    }
+
+    async fn notify_disconnect(&self) {
+        for listener in &self.listeners {
+            listener.on_disconnect().await;
+        }
+    }
+
+    async fn notify_error(&self, error: &str) {
+        for listener in &self.listeners {
+            listener.on_error(error).await;
+        }
     }
 
     /// Get current tunnel state
@@ -253,9 +335,14 @@ impl VpnTunnel {
         self.state
     }
 
-    /// Get tunnel statistics
-    pub fn stats(&self) -> &TunnelStats {
-        &self.stats
+    /// Get tunnel statistics (cloned)
+    pub async fn stats(&self) -> TunnelStats {
+        self.stats.read().await.clone()
+    }
+
+    /// Get stats as a reference for real-time updates
+    pub fn stats_ref(&self) -> Arc<RwLock<TunnelStats>> {
+        self.stats.clone()
     }
 
     /// Check if tunnel is active

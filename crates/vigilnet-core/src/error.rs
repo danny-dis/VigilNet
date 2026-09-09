@@ -36,6 +36,10 @@ pub enum Error {
     #[error("Routing error: {0}")]
     Routing(String),
 
+    /// Agent error
+    #[error("Agent error: {0}")]
+    Agent(String),
+
     /// Node not running
     #[error("Node is not running")]
     NotRunning,
@@ -43,4 +47,16 @@ pub enum Error {
     /// Node already running
     #[error("Node is already running")]
     AlreadyRunning,
+
+    /// Internal error
+    #[error("Internal error: {0}")]
+    Internal(String),
+
+    /// Circuit error
+    #[error("Circuit error: {0}")]
+    Circuit(String),
+
+    /// E2EE error
+    #[error("E2EE error: {0}")]
+    E2EE(String),
 }

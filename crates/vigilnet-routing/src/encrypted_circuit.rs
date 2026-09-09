@@ -256,16 +256,18 @@ mod tests {
         alice.init_as_initiator(shared_secret, bob_public);
         bob.init_as_responder(shared_secret);
 
-        alice.establish_session().unwrap();
-        bob.establish_session().unwrap();
+        alice.establish_session().expect("Alice should establish session");
+        bob.establish_session().expect("Bob should establish session");
 
-        bob.process_dh_public_key(&alice.current_sending_key().unwrap()).unwrap();
-        alice.process_dh_public_key(&bob.current_sending_key().unwrap()).unwrap();
+        let alice_key = alice.current_sending_key().expect("Alice should have sending key");
+        bob.process_dh_public_key(&alice_key).expect("Bob should process Alice's DH key");
+        let bob_key = bob.current_sending_key().expect("Bob should have sending key");
+        alice.process_dh_public_key(&bob_key).expect("Alice should process Bob's DH key");
 
         let plaintext = b"Hello, secure world!";
         
-        let encrypted = alice.wrap_for_transport(plaintext).unwrap();
-        let decrypted = bob.unwrap_from_transport(&encrypted).unwrap();
+        let encrypted = alice.wrap_for_transport(plaintext).expect("Should encrypt message");
+        let decrypted = bob.unwrap_from_transport(&encrypted).expect("Should decrypt message");
         
         assert_eq!(plaintext.as_slice(), decrypted.as_slice());
     }
@@ -280,16 +282,16 @@ mod tests {
 
         let mut alice = EncryptedCircuit::new(alice_circuit);
         alice.init_as_initiator(shared_secret, bob_public);
-        alice.establish_session().unwrap();
+        alice.establish_session().expect("Alice should establish session");
 
         let plaintext = b"Secret message that relay cannot read";
-        let encrypted_blob = alice.wrap_for_transport(plaintext).unwrap();
+        let encrypted_blob = alice.wrap_for_transport(plaintext).expect("Should encrypt message");
 
         let mut fake_relay = EncryptedCircuit::new(Circuit::new(99));
         fake_relay.init_as_responder([0x99u8; 32]);
-        fake_relay.establish_session().unwrap();
+        fake_relay.establish_session().expect("Fake relay should establish session");
 
         let result = fake_relay.unwrap_from_transport(&encrypted_blob);
-        assert!(result.is_err() || result.unwrap() != plaintext.to_vec());
+        assert!(result.is_err() || result.expect("Should have result") != plaintext.to_vec());
     }
 }

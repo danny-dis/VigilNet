@@ -2,7 +2,7 @@
 
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
-use tracing::debug;
+use tracing::{debug, info, instrument, trace, warn};
 use serde::{Serialize, Deserialize};
 
 /// Information about a potential relay
@@ -82,7 +82,9 @@ pub struct PathSelector {
 
 impl PathSelector {
     /// Create a new path selector
+    #[instrument(level = "debug")]
     pub fn new() -> Self {
+        debug!("Creating new PathSelector");
         Self {
             relays: Vec::new(),
             strategy: PathStrategy::GuardMiddleExit,
@@ -93,44 +95,65 @@ impl PathSelector {
     }
 
     /// Set the relay list
+    #[instrument(skip(self, relays), level = "debug")]
     pub fn with_relays(mut self, relays: Vec<RelayInfo>) -> Self {
+        debug!(relay_count = relays.len(), "Setting relay list");
         self.relays = relays;
         self
     }
 
     /// Set selection strategy
+    #[instrument(skip(self), level = "debug")]
     pub fn with_strategy(mut self, strategy: PathStrategy) -> Self {
+        debug!(?strategy, "Setting path selection strategy");
         self.strategy = strategy;
         self
     }
 
     /// Set hop count range
+    #[instrument(skip(self), level = "debug")]
     pub fn with_hops(mut self, min: usize, max: usize) -> Self {
+        debug!(min_hops = min, max_hops = max, "Setting hop count range");
         self.min_hops = min;
         self.max_hops = max;
         self
     }
 
     /// Exclude a peer from selection
+    #[instrument(skip(self, peer_id), level = "debug")]
     pub fn exclude(&mut self, peer_id: [u8; 32]) {
+        debug!(peer_id = ?peer_id, "Excluding peer from path selection");
         self.excluded.insert(peer_id);
     }
 
     /// Add or update a relay
+    #[instrument(skip(self, info), level = "debug")]
     pub fn add_relay(&mut self, info: RelayInfo) {
         // Check if exists
         if let Some(existing) = self.relays.iter_mut().find(|r| r.peer_id == info.peer_id) {
+            trace!(peer_id = ?info.peer_id, "Updating existing relay");
             *existing = info;
         } else {
+            trace!(peer_id = ?info.peer_id, "Adding new relay");
             self.relays.push(info);
         }
+        debug!(total_relays = self.relays.len(), "Relay added/updated");
     }
 
     /// Select a path for a new circuit
     ///
     /// Returns (entry, middle..., exit) nodes
+    #[instrument(skip(self), level = "info")]
     pub fn select_path(&self, hop_count: usize) -> Option<Vec<RelayInfo>> {
+        info!(hop_count, ?self.strategy, "Selecting path for circuit");
+
         if hop_count < self.min_hops || hop_count > self.max_hops {
+            warn!(
+                requested = hop_count,
+                min = self.min_hops,
+                max = self.max_hops,
+                "Hop count out of range"
+            );
             return None;
         }
 
@@ -140,11 +163,18 @@ impl PathSelector {
             .filter(|r| !self.excluded.contains(&r.peer_id))
             .collect();
 
+        trace!(
+            total_relays = self.relays.len(),
+            available_relays = available.len(),
+            excluded = self.excluded.len(),
+            "Filtering available relays"
+        );
+
         if available.len() < hop_count {
-            debug!(
-                "Not enough relays: need {}, have {}",
-                hop_count,
-                available.len()
+            warn!(
+                needed = hop_count,
+                available = available.len(),
+                "Not enough relays for path selection"
             );
             return None;
         }
@@ -157,7 +187,24 @@ impl PathSelector {
             PathStrategy::Hybrid => self.select_hybrid(&available, hop_count),
             PathStrategy::GuardMiddleExit => self.select_guard_middle_exit(&available, hop_count),
         };
-        
+
+        if let Some(ref selected) = path {
+            info!(
+                hop_count = selected.len(),
+                "Path selected successfully"
+            );
+            for (i, hop) in selected.iter().enumerate() {
+                debug!(
+                    hop_num = i + 1,
+                    peer_id = ?hop.peer_id,
+                    is_exit = hop.is_exit,
+                    "Path hop"
+                );
+            }
+        } else {
+            warn!("Path selection failed");
+        }
+
         path
     }
 
@@ -359,8 +406,7 @@ mod tests {
 
         let path = selector.select_path(3);
         
-        assert!(path.is_some());
-        let path = path.unwrap();
+        let path = path.expect("Path selection should return Some");
         assert_eq!(path.len(), 3);
         
         assert!(path[0].is_suitable_guard());
@@ -381,8 +427,7 @@ mod tests {
 
         let path = selector.select_path(3);
         
-        assert!(path.is_some());
-        assert_eq!(path.unwrap().len(), 3);
+        assert_eq!(path.expect("Hybrid selection should return Some").len(), 3);
     }
 
     #[test]

@@ -473,15 +473,15 @@ impl MeshFallback {
 
     async fn queue_message(&self, message: MeshMessage) {
         let mut queue = self.message_queue.write();
-        
+
         if queue.len() >= self.config.max_queue_size {
             queue.pop_front();
         }
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
         queue.push_back((message, timestamp));
 

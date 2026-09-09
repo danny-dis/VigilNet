@@ -201,12 +201,12 @@ mod tests {
                 10,
             )
             .await
-            .unwrap();
+            .expect("Failed to create circle");
 
         let invite = service
             .create_invite(circle_id, 2, 3, creator_id, Some(10), 24)
             .await
-            .unwrap();
+            .expect("Failed to create invite");
 
         assert!(!invite.shares.is_empty());
 
@@ -215,21 +215,21 @@ mod tests {
         service
             .add_member(circle_id, member_id, member_key, None)
             .await
-            .unwrap();
+            .expect("Failed to add member");
 
         let plaintext = b"Protected health information";
         let ciphertext = service
             .encrypt_for_circle(circle_id, plaintext)
             .await
-            .unwrap();
+            .expect("Failed to encrypt for circle");
         let decrypted = service
             .decrypt_for_circle(circle_id, &ciphertext)
             .await
-            .unwrap();
+            .expect("Failed to decrypt for circle");
 
         assert_eq!(plaintext.to_vec(), decrypted);
 
-        let audit_log = service.get_audit_log(circle_id).await.unwrap();
+        let audit_log = service.get_audit_log(circle_id).await.expect("Failed to get audit log");
         assert!(audit_log.is_some());
     }
 
@@ -248,15 +248,15 @@ mod tests {
                 5,
             )
             .await
-            .unwrap();
+            .expect("Failed to create private circle");
 
         let member_id = Uuid::new_v4();
         service
             .add_member(circle_id, member_id, [2u8; 32], None)
             .await
-            .unwrap();
+            .expect("Failed to add member to private circle");
 
-        let circle = service.get_circle(circle_id).await.unwrap();
+        let circle = service.get_circle(circle_id).await.expect("Failed to get circle");
         assert_eq!(circle.circle_type, CircleType::Private);
         assert_eq!(circle.members.len(), 2);
     }

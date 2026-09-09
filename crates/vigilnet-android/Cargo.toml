@@ -19,14 +19,35 @@ vigilnet-proxy = { path = "../vigilnet-proxy" }
 vigilnet-agent-mesh = { path = "../vigilnet-agent-mesh" }
 vigilnet-wireguard = { path = "../vigilnet-wireguard" }
 vigilnet-agent-circles = { path = "../vigilnet-agent-circles" }
+vigilnet-agent-research = { path = "../vigilnet-agent-research" }
+vigilnet-agent-transport = { path = "../vigilnet-agent-transport" }
+vigilnet-agent-core = { path = "../vigilnet-agent-core" }
+vigilnet-tor = { path = "../vigilnet-tor" }
+vigilnet-i2p = { path = "../vigilnet-i2p" }
+vigilnet-nym = { path = "../vigilnet-nym" }
+vigilnet-freenet = { path = "../vigilnet-freenet" }
 
 # Async runtime
 tokio = { workspace = true }
 async-trait = "0.1"
 
+# P2P networking (for E2EE transport)
+libp2p = { workspace = true }
+
+# Time handling
+chrono = "0.4"
+
+# UUID
+uuid = { workspace = true }
+
+# Socket handling
+socket2 = "0.5"
+
 # Serialization
 serde = { workspace = true }
 serde_json = "1.0"
+bytes = "1.5"
+arc-swap = "1.6"
 
 # Logging
 tracing = { workspace = true }
