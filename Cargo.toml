@@ -111,6 +111,7 @@ vigilnet-agent-circles = { path = "crates/vigilnet-agent-circles" }
 vigilnet-agent-research = { path = "crates/vigilnet-agent-research" }
 vigilnet-agent-mesh = { path = "crates/vigilnet-agent-mesh" }
 vigilnet-macros = { path = "crates/vigilnet-macros" }
+vigilnet-proxy = { path = "crates/vigilnet-proxy" }
 
 # Testing
 criterion = { version = "0.5", features = ["async_tokio"] }

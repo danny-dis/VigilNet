@@ -18,7 +18,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-nym-sdk = { version = "0.1", default-features = false }
+nym-sdk = { version = "1.21", default-features = false }
 
 [features]
 default = []

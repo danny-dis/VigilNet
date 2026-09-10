@@ -20,8 +20,8 @@ anyhow = { workspace = true }
 rand = { workspace = true }
 base32 = "0.5"
 
-arti-client = { version = "0.16", features = ["tokio", "rustls", "pt-client"] }
-tor-rtcompat = { version = "0.16", features = ["tokio", "rustls"] }
+arti-client = { version = "0.46", features = ["tokio", "rustls", "pt-client"] }
+tor-rtcompat = { version = "0.46", features = ["tokio", "rustls"] }
 
 [features]
 default = []

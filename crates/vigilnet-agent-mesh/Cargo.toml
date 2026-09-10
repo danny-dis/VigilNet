@@ -29,10 +29,10 @@ dashmap = "6.0"
 directories = "5.0"
 rand = "0.8"
 
-rumqttc = "0.24"
+rumqttc = { version = "0.24", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-bluer = "0.16"
+bluer = { version = "0.16", optional = true }
 
 [features]
 default = []
