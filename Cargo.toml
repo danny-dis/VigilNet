@@ -11,11 +11,9 @@ members = [
     "crates/vigilnet-cli",
     "crates/vigilnet-proxy",
     "crates/vigilnet-android",
-    "crates/vigilnet-tor",
     "crates/vigilnet-i2p",
     "crates/vigilnet-freenet",
     "crates/vigilnet-wireguard",
-    "crates/vigilnet-nym",
     "crates/vigilnet-agent-transport",
     "crates/vigilnet-agent-circles",
     "crates/vigilnet-agent-research",
@@ -100,11 +98,9 @@ vigilnet-discovery = { path = "crates/vigilnet-discovery" }
 vigilnet-transport = { path = "crates/vigilnet-transport" }
 vigilnet-tun = { path = "crates/vigilnet-tun" }
 vigilnet-android = { path = "crates/vigilnet-android" }
-vigilnet-tor = { path = "crates/vigilnet-tor" }
 vigilnet-i2p = { path = "crates/vigilnet-i2p" }
 vigilnet-freenet = { path = "crates/vigilnet-freenet" }
 vigilnet-wireguard = { path = "crates/vigilnet-wireguard" }
-vigilnet-nym = { path = "crates/vigilnet-nym" }
 vigilnet-agent-core = { path = "crates/vigilnet-agent-core" }
 vigilnet-agent-transport = { path = "crates/vigilnet-agent-transport" }
 vigilnet-agent-circles = { path = "crates/vigilnet-agent-circles" }
