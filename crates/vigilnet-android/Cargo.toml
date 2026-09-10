@@ -22,10 +22,10 @@ vigilnet-agent-circles = { path = "../vigilnet-agent-circles" }
 vigilnet-agent-research = { path = "../vigilnet-agent-research" }
 vigilnet-agent-transport = { path = "../vigilnet-agent-transport" }
 vigilnet-agent-core = { path = "../vigilnet-agent-core" }
-vigilnet-tor = { path = "../vigilnet-tor" }
-vigilnet-i2p = { path = "../vigilnet-i2p" }
-vigilnet-nym = { path = "../vigilnet-nym" }
-vigilnet-freenet = { path = "../vigilnet-freenet" }
+vigilnet-tor = { path = "../vigilnet-tor", optional = true }
+vigilnet-i2p = { path = "../vigilnet-i2p", optional = true }
+vigilnet-nym = { path = "../vigilnet-nym", optional = true }
+vigilnet-freenet = { path = "../vigilnet-freenet", optional = true }
 
 # Async runtime
 tokio = { workspace = true }
@@ -61,7 +61,6 @@ anyhow = { workspace = true }
 jni = { version = "0.21", optional = true }
 
 # TUN interface (with fd support for Android VpnService)
-# TUN interface (with fd support for Android VpnService)
 tun-rs = { workspace = true }
 
 # Packet parsing
@@ -76,3 +75,7 @@ simple-dns = "0.7"
 [features]
 default = []
 android = ["jni"]
+tor = ["vigilnet-tor"]
+nym = ["vigilnet-nym"]
+i2p = ["vigilnet-i2p"]
+freenet = ["vigilnet-freenet"]

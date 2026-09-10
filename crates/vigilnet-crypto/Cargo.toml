@@ -8,7 +8,7 @@ description = "Cryptography layer for VigilNet - onion encryption, key managemen
 
 [features]
 default = ["simd"]
-simd = ["aes-gcm/asm"]
+simd = []
 
 [dependencies]
 aes-gcm.workspace = true
